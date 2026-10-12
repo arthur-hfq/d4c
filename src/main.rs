@@ -14,7 +14,8 @@ async fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        None | Some(Commands::Ui) => Engine::ui().await,
+        None => Engine::ui(false).await,
+        Some(Commands::Ui { tui }) => Engine::ui(tui).await,
         Some(Commands::Up {
             service_type,
             port,
@@ -36,7 +37,7 @@ async fn main() {
             network,
             image,
         ),
-        Some(Commands::Ps) => Engine::ps(),
+        Some(Commands::Ps { json }) => Engine::ps(json),
         Some(Commands::Start { service }) => Engine::start(&service),
         Some(Commands::Stop { service }) => Engine::stop(&service),
         Some(Commands::Rm { service }) => Engine::rm(&service),

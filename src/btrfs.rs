@@ -118,11 +118,22 @@ pub fn create_service_snapshot(
         }
         cmd.arg(&source_subvol).arg(&dest_subvol);
 
-        let status = cmd
-            .status()
-            .context("Failed to execute command 'btrfs subvolume snapshot'")?;
+        let output = cmd.output();
+        let success = match output {
+            Ok(ref o) if o.status.success() => true,
+            _ => {
+                // Retry under podman unshare in case rootless container subuid permissions prevent host access
+                let mut unshare_cmd = Command::new("podman");
+                unshare_cmd.args(["unshare", "btrfs", "subvolume", "snapshot"]);
+                if readonly {
+                    unshare_cmd.arg("-r");
+                }
+                unshare_cmd.arg(&source_subvol).arg(&dest_subvol);
+                unshare_cmd.output().is_ok_and(|o| o.status.success())
+            }
+        };
 
-        if !status.success() {
+        if !success {
             // Attempt reflink copy fallback
             copy_dir_reflink(&source_subvol, &dest_subvol)
                 .context("Failed to create Btrfs snapshot and fallback copy failed")?;
@@ -158,19 +169,27 @@ pub fn branch_service_volume(
             .args(["subvolume", "snapshot"])
             .arg(&source_subvol)
             .arg(&branch_subvol)
-            .status();
+            .output();
 
-        match status {
-            Ok(s) if s.success() => Ok(branch_subvol),
+        let success = match status {
+            Ok(ref o) if o.status.success() => true,
             _ => {
-                copy_dir_reflink(&source_subvol, &branch_subvol)?;
-                Ok(branch_subvol)
+                Command::new("podman")
+                    .args(["unshare", "btrfs", "subvolume", "snapshot"])
+                    .arg(&source_subvol)
+                    .arg(&branch_subvol)
+                    .output()
+                    .is_ok_and(|o| o.status.success())
             }
+        };
+
+        if success {
+            return Ok(branch_subvol);
         }
-    } else {
-        copy_dir_reflink(&source_subvol, &branch_subvol)?;
-        Ok(branch_subvol)
     }
+
+    copy_dir_reflink(&source_subvol, &branch_subvol)?;
+    Ok(branch_subvol)
 }
 
 /// Lists all snapshots created for a specific service
@@ -346,10 +365,23 @@ pub fn export_service_snapshot(
         .arg("-C")
         .arg(snapshot_dir.parent().context("Snapshot dir has no parent")?)
         .arg(snapshot_dir.file_name().context("Snapshot dir has no name")?)
-        .status()
-        .context("Failed to execute tar command for snapshot export")?;
+        .status();
 
-    if !status.success() {
+    let success = match status {
+        Ok(s) if s.success() => true,
+        _ => {
+            Command::new("podman")
+                .args(["unshare", "tar", "-czf"])
+                .arg(&tarball_path)
+                .arg("-C")
+                .arg(snapshot_dir.parent().context("Snapshot dir has no parent")?)
+                .arg(snapshot_dir.file_name().context("Snapshot dir has no name")?)
+                .status()
+                .is_ok_and(|s| s.success())
+        }
+    };
+
+    if !success {
         bail!("tar command failed with non-zero exit status during export");
     }
 
@@ -413,6 +445,14 @@ pub fn delete_subvolume_or_dir(path: &Path) -> Result<()> {
         let _ = fs::remove_file(path);
     }
 
+    // Final fallback for rootless container subuids
+    if path.exists() {
+        let _ = Command::new("podman")
+            .args(["unshare", "rm", "-rf"])
+            .arg(path)
+            .status();
+    }
+
     Ok(())
 }
 
@@ -449,6 +489,23 @@ fn check_is_readonly(path: &Path) -> bool {
 }
 
 fn calculate_dir_size(path: &Path) -> u64 {
+    // Try du -sb via podman unshare for accurate rootless container subuid sizes
+    let output = Command::new("podman")
+        .args(["unshare", "du", "-sb"])
+        .arg(path)
+        .output();
+
+    if let Ok(out) = output
+        && out.status.success()
+    {
+        let s = String::from_utf8_lossy(&out.stdout);
+        if let Some(first_word) = s.split_whitespace().next()
+            && let Ok(bytes) = first_word.parse::<u64>()
+        {
+            return bytes;
+        }
+    }
+
     let mut total_size = 0;
     if let Ok(entries) = fs::read_dir(path) {
         for entry in entries.flatten() {
@@ -465,14 +522,25 @@ fn calculate_dir_size(path: &Path) -> u64 {
 }
 
 fn copy_dir_reflink(src: &Path, dst: &Path) -> Result<()> {
-    // Attempt cp --reflink=auto -a src dst
+    // Attempt cp --reflink=auto -a src dst (capture output to suppress rootless permission noise)
     let status = Command::new("cp")
         .args(["--reflink=auto", "-a"])
         .arg(src)
         .arg(dst)
-        .status();
+        .output();
 
-    if status.is_ok_and(|s| s.success()) {
+    if status.is_ok_and(|s| s.status.success()) {
+        return Ok(());
+    }
+
+    // Attempt under podman unshare
+    let unshare_status = Command::new("podman")
+        .args(["unshare", "cp", "--reflink=auto", "-a"])
+        .arg(src)
+        .arg(dst)
+        .output();
+
+    if unshare_status.is_ok_and(|s| s.status.success()) {
         return Ok(());
     }
 

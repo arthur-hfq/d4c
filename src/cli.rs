@@ -14,8 +14,12 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Launch the interactive terminal dashboard (TUI)
-    Ui,
+    /// Launch the QuickShell graphical dashboard (or terminal UI with --tui)
+    Ui {
+        /// Launch in text terminal mode instead of QuickShell
+        #[arg(long)]
+        tui: bool,
+    },
 
     /// Provision and run a preconfigured catalog service or custom image
     Up {
@@ -57,7 +61,11 @@ pub enum Commands {
     },
 
     /// List all managed services, health status, and port bindings
-    Ps,
+    Ps {
+        /// Output results in JSON format
+        #[arg(short, long)]
+        json: bool,
+    },
 
     /// Start or restart a managed service
     Start {
@@ -193,6 +201,10 @@ pub enum SnapCommands {
     List {
         /// Target service name
         service: String,
+
+        /// Output results in JSON format
+        #[arg(short, long)]
+        json: bool,
     },
 
     /// Restore a service volume to a previous snapshot
@@ -228,7 +240,11 @@ pub enum NetCommands {
     },
 
     /// List custom networks with container attachment counts
-    List,
+    List {
+        /// Output results in JSON format
+        #[arg(short, long)]
+        json: bool,
+    },
 
     /// Remove a custom bridge network
     Rm {

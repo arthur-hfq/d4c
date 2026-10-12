@@ -8,6 +8,7 @@ use console::Style;
 use dialoguer::{Confirm, Input, Select};
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 pub struct Engine;
 
@@ -78,14 +79,21 @@ impl Engine {
 
         println!(
             "\n{}",
-            green.apply_to(format!("✓ Service '{}' is up and running! (ID: {})", service_name, &container_id[..12.min(container_id.len())]))
+            green.apply_to(format!("[OK] Service '{}' is up and running! (ID: {})", service_name, &container_id[..12.min(container_id.len())]))
         );
         Ok(())
     }
 
-    /// List all managed services in a formatted dashboard table
-    pub fn ps() -> Result<()> {
+    /// List all managed services in a formatted dashboard table or JSON
+    pub fn ps(json: bool) -> Result<()> {
         let services = podman::list_services()?;
+
+        if json {
+            let json_str = serde_json::to_string_pretty(&services)
+                .context("Failed to serialize services to JSON")?;
+            println!("{}", json_str);
+            return Ok(());
+        }
 
         if services.is_empty() {
             println!("No managed services found. Run 'd4c up <service_type>' to provision one.");
@@ -159,7 +167,7 @@ impl Engine {
         let green = Style::new().green().bold();
         println!("Starting service '{}'...", service);
         podman::start_service(service)?;
-        println!("{}", green.apply_to(format!("✓ Service '{}' started.", service)));
+        println!("{}", green.apply_to(format!("[OK] Service '{}' started.", service)));
         Ok(())
     }
 
@@ -168,7 +176,7 @@ impl Engine {
         let yellow = Style::new().yellow().bold();
         println!("Stopping service '{}'...", service);
         podman::stop_service(service)?;
-        println!("{}", yellow.apply_to(format!("✓ Service '{}' stopped.", service)));
+        println!("{}", yellow.apply_to(format!("[OK] Service '{}' stopped.", service)));
         Ok(())
     }
 
@@ -177,7 +185,7 @@ impl Engine {
         let yellow = Style::new().yellow().bold();
         println!("Removing container for service '{}' (volume will be preserved)...", service);
         podman::remove_container(service, true)?;
-        println!("{}", yellow.apply_to(format!("✓ Container '{}' removed. Btrfs volume preserved.", service)));
+        println!("{}", yellow.apply_to(format!("[OK] Container '{}' removed. Btrfs volume preserved.", service)));
         Ok(())
     }
 
@@ -187,7 +195,7 @@ impl Engine {
 
         if !force {
             let confirmation = Confirm::new()
-                .with_prompt(format!("⚠️  Are you sure you want to WIPE '{}' and DESTROY all its data subvolumes?", service))
+                .with_prompt(format!("[WARN] Are you sure you want to WIPE '{}' and DESTROY all its data subvolumes?", service))
                 .default(false)
                 .interact()?;
 
@@ -208,7 +216,7 @@ impl Engine {
         let mut store = StateStore::load().unwrap_or_default();
         let _ = store.remove_service(service);
 
-        println!("{}", red.apply_to(format!("✓ Service '{}' and all associated Btrfs volumes were wiped.", service)));
+        println!("{}", red.apply_to(format!("[OK] Service '{}' and all associated Btrfs volumes were wiped.", service)));
         Ok(())
     }
 
@@ -223,7 +231,7 @@ impl Engine {
         let green = Style::new().green().bold();
         println!("Updating resource limits for service '{}'...", service);
         podman::update_service_resources(service, cpus.as_deref(), memory.as_deref())?;
-        println!("{}", green.apply_to(format!("✓ Resource limits updated for '{}'.", service)));
+        println!("{}", green.apply_to(format!("[OK] Resource limits updated for '{}'.", service)));
         Ok(())
     }
 
@@ -233,8 +241,8 @@ impl Engine {
         let mut store = StateStore::load().unwrap_or_default();
         store.set_service_tag(service, tag.clone())?;
         match tag {
-            Some(t) => println!("{}", green.apply_to(format!("✓ Service '{}' tagged with '{}'.", service, t))),
-            None => println!("{}", green.apply_to(format!("✓ Removed tag from service '{}'.", service))),
+            Some(t) => println!("{}", green.apply_to(format!("[OK] Service '{}' tagged with '{}'.", service, t))),
+            None => println!("{}", green.apply_to(format!("[OK] Removed tag from service '{}'.", service))),
         }
         Ok(())
     }
@@ -249,7 +257,7 @@ impl Engine {
                 println!(
                     "{}",
                     green.apply_to(format!(
-                        "✓ Snapshot created at: {:?} (readonly: {})",
+                        "[OK] Snapshot created at: {:?} (readonly: {})",
                         snap_path, readonly
                     ))
                 );
@@ -305,7 +313,7 @@ impl Engine {
                 println!(
                     "{}",
                     green.apply_to(format!(
-                        "✓ Cloned branch '{}' ready on port {}! (ID: {})",
+                        "[OK] Cloned branch '{}' ready on port {}! (ID: {})",
                         branch_name,
                         branch_port,
                         &cid[..12.min(cid.len())]
@@ -336,7 +344,7 @@ impl Engine {
 
                 println!(
                     "{}",
-                    green.apply_to(format!("✓ Service '{}' restored from snapshot at {:?}.", service, restored_path))
+                    green.apply_to(format!("[OK] Service '{}' restored from snapshot at {:?}.", service, restored_path))
                 );
             }
             SnapCommands::Merge { source, target } => {
@@ -363,7 +371,7 @@ impl Engine {
 
                 println!(
                     "{}",
-                    green.apply_to(format!("✓ Successfully merged '{}' into '{}' with safety snapshot created.", source, target))
+                    green.apply_to(format!("[OK] Successfully merged '{}' into '{}' with safety snapshot created.", source, target))
                 );
             }
             SnapCommands::Export { service, destination } => {
@@ -372,11 +380,18 @@ impl Engine {
                 let tarball = btrfs::export_service_snapshot(&service, destination.as_deref())?;
                 println!(
                     "{}",
-                    green.apply_to(format!("✓ Snapshot exported successfully to: {:?}", tarball))
+                    green.apply_to(format!("[OK] Snapshot exported successfully to: {:?}", tarball))
                 );
             }
-            SnapCommands::List { service } => {
+            SnapCommands::List { service, json } => {
                 let snapshots = btrfs::list_service_snapshots(&service)?;
+
+                if json {
+                    let json_str = serde_json::to_string_pretty(&snapshots)
+                        .context("Failed to serialize snapshots to JSON")?;
+                    println!("{}", json_str);
+                    return Ok(());
+                }
 
                 if snapshots.is_empty() {
                     println!("No snapshots found for service '{}'.", service);
@@ -421,10 +436,17 @@ impl Engine {
                 let green = Style::new().green().bold();
                 println!("Creating bridge network '{}'...", name);
                 let created_name = net::create_bridge_network(&name, tag.as_deref())?;
-                println!("{}", green.apply_to(format!("✓ Bridge network '{}' created.", created_name)));
+                println!("{}", green.apply_to(format!("[OK] Bridge network '{}' created.", created_name)));
             }
-            NetCommands::List => {
+            NetCommands::List { json } => {
                 let networks = net::list_bridge_networks()?;
+
+                if json {
+                    let json_str = serde_json::to_string_pretty(&networks)
+                        .context("Failed to serialize networks to JSON")?;
+                    println!("{}", json_str);
+                    return Ok(());
+                }
 
                 if networks.is_empty() {
                     println!("No d4c bridge networks found. Use 'd4c net create <name>' to create one.");
@@ -463,19 +485,19 @@ impl Engine {
                 let yellow = Style::new().yellow().bold();
                 println!("Removing bridge network '{}'...", name);
                 net::remove_bridge_network(&name)?;
-                println!("{}", yellow.apply_to(format!("✓ Bridge network '{}' removed.", name)));
+                println!("{}", yellow.apply_to(format!("[OK] Bridge network '{}' removed.", name)));
             }
             NetCommands::Attach { service, network } => {
                 let green = Style::new().green().bold();
                 println!("Attaching container '{}' to network '{}'...", service, network);
                 net::attach_container(&service, &network)?;
-                println!("{}", green.apply_to(format!("✓ Container '{}' attached to '{}'.", service, network)));
+                println!("{}", green.apply_to(format!("[OK] Container '{}' attached to '{}'.", service, network)));
             }
             NetCommands::Detach { service, network } => {
                 let yellow = Style::new().yellow().bold();
                 println!("Detaching container '{}' from network '{}'...", service, network);
                 net::detach_container(&service, &network)?;
-                println!("{}", yellow.apply_to(format!("✓ Container '{}' detached from '{}'.", service, network)));
+                println!("{}", yellow.apply_to(format!("[OK] Container '{}' detached from '{}'.", service, network)));
             }
             NetCommands::Panorama { network } => {
                 net::panorama_logs(&network).await?;
@@ -563,7 +585,7 @@ impl Engine {
 
         println!(
             "{}",
-            green.apply_to(format!("✓ Exported docker-compose spec to {:?} (mode: {})", output, mode))
+            green.apply_to(format!("[OK] Exported docker-compose spec to {:?} (mode: {})", output, mode))
         );
         Ok(())
     }
@@ -618,7 +640,7 @@ impl Engine {
             for s in matched_services {
                 let port = s.host_port.map(|p| p.to_string()).unwrap_or_else(|| "-".to_string());
                 let tag = s.tag.unwrap_or_else(|| "-".to_string());
-                println!("  • {} [catalog: {}, port: {}, tag: {}, status: {}]",
+                println!("  * {} [catalog: {}, port: {}, tag: {}, status: {}]",
                     cyan.apply_to(&s.name), s.catalog, port, tag, s.status
                 );
             }
@@ -629,7 +651,7 @@ impl Engine {
             println!("{}", bold.apply_to(format!("Found {} matching network(s):", matched_networks.len())));
             for n in matched_networks {
                 let sub = n.subnet.unwrap_or_else(|| "-".to_string());
-                println!("  • {} [subnet: {}, containers: {}]",
+                println!("  * {} [subnet: {}, containers: {}]",
                     cyan.apply_to(&n.name), sub, n.containers_count
                 );
             }
@@ -638,28 +660,74 @@ impl Engine {
         Ok(())
     }
 
-    /// Interactive terminal UI dashboard
-    pub async fn ui() -> Result<()> {
+    /// Launch UI: Quickshell graphical window by default, or terminal dashboard if --tui
+    pub async fn ui(tui: bool) -> Result<()> {
+        if !tui {
+            // Find quickshell path
+            let qs_locations = [
+                PathBuf::from("./quickshell/shell.qml"),
+                dirs_or_env_var().unwrap_or_default().join("d4c").join("quickshell").join("shell.qml"),
+                PathBuf::from("/home/mepper/Projects/d4c/quickshell/shell.qml"),
+            ];
+
+            let found_qml = qs_locations.iter().find(|p| p.exists());
+
+            if let Some(qml_path) = found_qml {
+                let which_qs = Command::new("which").arg("quickshell").output();
+                let has_quickshell = which_qs.is_ok_and(|out| out.status.success());
+
+                if has_quickshell {
+                    println!("[INFO] Launching QuickShell dashboard ({:?})...", qml_path);
+                    let mut cmd = Command::new("quickshell");
+                    if let Ok(exe) = std::env::current_exe() {
+                        cmd.env("D4C_BIN", exe);
+                    }
+                    let status = cmd
+                        .args(["-p", &qml_path.to_string_lossy()])
+                        .status();
+
+                    match status {
+                        Ok(s) if s.success() => return Ok(()),
+                        Ok(_) => {
+                            eprintln!("[WARN] QuickShell exited with non-zero status. Falling back to terminal mode.");
+                        }
+                        Err(e) => {
+                            eprintln!("[WARN] Failed to spawn QuickShell: {}. Falling back to terminal mode.", e);
+                        }
+                    }
+                } else {
+                    eprintln!("[WARN] 'quickshell' binary not found on PATH. Falling back to terminal mode.");
+                }
+            } else {
+                eprintln!("[WARN] quickshell/shell.qml not found. Falling back to terminal mode.");
+            }
+        }
+
+        Self::tui().await
+    }
+
+    /// Clean text-only terminal UI dashboard
+    pub async fn tui() -> Result<()> {
         let bold = Style::new().bold();
 
         loop {
-            println!("\n{}", bold.apply_to("=== d4c: Minimalist Podman & Btrfs Orchestrator ==="));
+            println!("\n{}", bold.apply_to("=== d4c: Podman & Btrfs Orchestrator ==="));
             println!("Select an action:");
 
             let options = &[
-                "📊 Service Dashboard (Ps)",
-                "🚀 Provision New Service (Up)",
-                "▶️  Start Service",
-                "⏹️  Stop Service",
-                "🌿 Branch Service (Atomic CoW clone)",
-                "📸 Create Volume Snapshot",
-                "⏪ Restore Snapshot",
-                "🔀 Merge Branch into Target",
-                "📦 Export Snapshot Archive",
-                "🌐 Bridge Networks",
-                "📜 View Logs",
-                "🗑️  Remove / Wipe Service",
-                "🚪 Exit",
+                "[1] Service Dashboard (Ps)",
+                "[2] Provision New Service (Up)",
+                "[3] Start Service",
+                "[4] Stop Service",
+                "[5] Branch Service (Atomic CoW clone)",
+                "[6] Create Volume Snapshot",
+                "[7] Restore Snapshot",
+                "[8] Merge Branch into Target",
+                "[9] Export Snapshot Archive",
+                "[10] Bridge Networks",
+                "[11] View Logs",
+                "[12] Remove / Wipe Service",
+                "[0] Exit",
             ];
 
             let selection = Select::new()
@@ -669,7 +737,7 @@ impl Engine {
 
             match selection {
                 0 => {
-                    Self::ps()?;
+                    Self::ps(false)?;
                 }
                 1 => {
                     let catalogs = &[
@@ -862,7 +930,7 @@ impl Engine {
                     })?;
                 }
                 9 => {
-                    Self::net(NetCommands::List).await?;
+                    Self::net(NetCommands::List { json: false }).await?;
                 }
                 10 => {
                     let services = podman::list_services()?;
@@ -902,5 +970,13 @@ impl Engine {
         }
 
         Ok(())
+    }
+}
+
+fn dirs_or_env_var() -> Option<PathBuf> {
+    if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME") {
+        Some(PathBuf::from(xdg_data))
+    } else {
+        std::env::var("HOME").ok().map(|home| PathBuf::from(home).join(".local").join("share"))
     }
 }
