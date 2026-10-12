@@ -190,6 +190,25 @@ pub enum SnapCommands {
         /// Target service name
         service: String,
     },
+
+    /// Restore a service volume to a previous snapshot
+    Restore {
+        /// Target service container
+        service: String,
+
+        /// Snapshot tag or name to restore from
+        #[arg(short, long)]
+        snapshot: String,
+    },
+
+    /// Merge changes from a branch service volume back into a target service
+    Merge {
+        /// Source branch service container
+        source: String,
+
+        /// Target service container to receive the merged state
+        target: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -238,7 +257,8 @@ pub enum NetCommands {
     },
 }
 
-#[derive(ValueEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ServiceCatalog {
     Postgres,
     Mysql,
@@ -247,4 +267,18 @@ pub enum ServiceCatalog {
     Kafka,
     Rabbitmq,
     Custom,
+}
+
+impl std::fmt::Display for ServiceCatalog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServiceCatalog::Postgres => write!(f, "postgres"),
+            ServiceCatalog::Mysql => write!(f, "mysql"),
+            ServiceCatalog::Mongo => write!(f, "mongo"),
+            ServiceCatalog::Redis => write!(f, "redis"),
+            ServiceCatalog::Kafka => write!(f, "kafka"),
+            ServiceCatalog::Rabbitmq => write!(f, "rabbitmq"),
+            ServiceCatalog::Custom => write!(f, "custom"),
+        }
+    }
 }
