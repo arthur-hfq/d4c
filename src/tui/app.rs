@@ -31,13 +31,13 @@ impl Tab {
 
     pub fn title(&self) -> &'static str {
         match self {
-            Tab::Services => "\u{f233}  Services",
-            Tab::Networks => "\u{f0e8}  Networks",
+            Tab::Services => "\u{f233} Services",
+            Tab::Networks => "\u{f0e8} Networks",
             Tab::Snapshots => "\u{f0c2}  Snapshots",
-            Tab::Panorama => "\u{f06e}  Panorama",
-            Tab::Deploy => "\u{f067}  Deploy",
-            Tab::Search => "\u{f002}  Search",
-            Tab::Help => "\u{f059}  Help",
+            Tab::Panorama => "\u{f06e} Panorama",
+            Tab::Deploy => "\u{f067} Deploy",
+            Tab::Search => "\u{f002} Search",
+            Tab::Help => "\u{f059} Help",
         }
     }
 }
@@ -117,6 +117,12 @@ pub enum Modal {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeploySection {
+    Catalog,
+    Form,
+}
+
 #[derive(Debug, Clone)]
 pub struct DeployForm {
     pub catalog_idx: usize,
@@ -129,6 +135,7 @@ pub struct DeployForm {
     pub memory: String,
     pub network_idx: usize,
     pub field_idx: usize,
+    pub active_section: DeploySection,
 }
 
 impl Default for DeployForm {
@@ -144,6 +151,7 @@ impl Default for DeployForm {
             memory: String::new(),
             network_idx: 0,
             field_idx: 0,
+            active_section: DeploySection::Catalog,
         }
     }
 }
@@ -348,6 +356,7 @@ impl App {
         match self.tab {
             Tab::Services => self.refresh_selected_service_details(),
             Tab::Panorama => self.refresh_panorama_logs(),
+            Tab::Deploy => self.deploy_form.active_section = DeploySection::Catalog,
             _ => {}
         }
     }

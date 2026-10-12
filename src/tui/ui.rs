@@ -39,17 +39,27 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
+    let title_width = if area.width >= 115 { 17 } else if area.width >= 90 { 13 } else { 11 };
     let header_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(38), Constraint::Min(20)])
+        .constraints([Constraint::Length(title_width), Constraint::Min(20)])
         .split(area);
 
     // Title Block
-    let title_line = Line::from(vec![
-        Span::styled(" \u{f0e7} [D4C] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled("NODE CONTROL ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-        Span::styled("v0.1 ", Style::default().fg(Color::DarkGray)),
-    ]);
+    let title_line = if area.width >= 115 {
+        Line::from(vec![
+            Span::styled(" \u{f0e7} [D4C] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled("v0.1 ", Style::default().fg(Color::DarkGray)),
+        ])
+    } else if area.width >= 90 {
+        Line::from(vec![
+            Span::styled(" \u{f0e7} [D4C] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" \u{f0e7} D4C ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ])
+    };
 
     let title_block = Block::default()
         .borders(Borders::ALL)
@@ -57,20 +67,41 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(Color::DarkGray));
     f.render_widget(Paragraph::new(title_line).block(title_block), header_chunks[0]);
 
-    // Tab Bar
-    let tab_titles: Vec<Line> = Tab::all()
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            let num = format!("[{}] ", i + 1);
-            Line::from(vec![
-                Span::styled(num, Style::default().fg(Color::DarkGray)),
-                Span::raw(t.title()),
-            ])
-        })
-        .collect();
+    // Responsive Tab Bar
+    let tab_titles: Vec<Line> = if area.width >= 115 {
+        vec![
+            Line::from(vec![Span::styled("[1] ", Style::default().fg(Color::DarkGray)), Span::raw("\u{f233} Services")]),
+            Line::from(vec![Span::styled("[2] ", Style::default().fg(Color::DarkGray)), Span::raw("\u{f0e8} Networks")]),
+            Line::from(vec![Span::styled("[3] ", Style::default().fg(Color::DarkGray)), Span::raw("\u{f0c2}  Snaps")]),
+            Line::from(vec![Span::styled("[4] ", Style::default().fg(Color::DarkGray)), Span::raw("\u{f06e} Panorama")]),
+            Line::from(vec![Span::styled("[5] ", Style::default().fg(Color::DarkGray)), Span::raw("\u{f067} Deploy")]),
+            Line::from(vec![Span::styled("[6] ", Style::default().fg(Color::DarkGray)), Span::raw("\u{f002} Search")]),
+            Line::from(vec![Span::styled("[7] ", Style::default().fg(Color::DarkGray)), Span::raw("\u{f059} Help")]),
+        ]
+    } else if area.width >= 90 {
+        vec![
+            Line::from(vec![Span::styled("1:", Style::default().fg(Color::DarkGray)), Span::raw("\u{f233}Services")]),
+            Line::from(vec![Span::styled("2:", Style::default().fg(Color::DarkGray)), Span::raw("\u{f0e8}Nets")]),
+            Line::from(vec![Span::styled("3:", Style::default().fg(Color::DarkGray)), Span::raw("\u{f0c2}Snaps")]),
+            Line::from(vec![Span::styled("4:", Style::default().fg(Color::DarkGray)), Span::raw("\u{f06e}Pano")]),
+            Line::from(vec![Span::styled("5:", Style::default().fg(Color::DarkGray)), Span::raw("\u{f067}Deploy")]),
+            Line::from(vec![Span::styled("6:", Style::default().fg(Color::DarkGray)), Span::raw("\u{f002}Search")]),
+            Line::from(vec![Span::styled("7:", Style::default().fg(Color::DarkGray)), Span::raw("\u{f059}Help")]),
+        ]
+    } else {
+        vec![
+            Line::from("1:Svcs"),
+            Line::from("2:Nets"),
+            Line::from("3:Snaps"),
+            Line::from("4:Logs"),
+            Line::from("5:Deploy"),
+            Line::from("6:Search"),
+            Line::from("7:Help"),
+        ]
+    };
 
     let active_idx = Tab::all().iter().position(|t| *t == app.tab).unwrap_or(0);
+    let divider_str = if area.width >= 115 { " | " } else { "|" };
 
     let tabs = Tabs::new(tab_titles)
         .block(
@@ -87,7 +118,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::UNDERLINED),
         )
-        .divider(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+        .divider(Span::styled(divider_str, Style::default().fg(Color::DarkGray)));
 
     f.render_widget(tabs, header_chunks[1]);
 }
@@ -649,15 +680,17 @@ fn draw_deploy_tab(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Length(32), Constraint::Min(35)])
         .split(area);
 
+    let is_catalog_active = app.deploy_form.active_section == crate::tui::app::DeploySection::Catalog;
+
     // Left: Service Catalog Presets
     let catalogs = [
-        "1) PostgreSQL (16-alpine)",
-        "2) MySQL (8.0)",
-        "3) MongoDB (7.0)",
-        "4) Redis (7-alpine)",
-        "5) Kafka (KRaft)",
-        "6) RabbitMQ (3-management)",
-        "7) Custom Image...",
+        "\u{f233} PostgreSQL (16-alpine)",
+        "\u{f233} MySQL (8.0)",
+        "\u{f233} MongoDB (7.0)",
+        "\u{f233} Redis (7-alpine)",
+        "\u{f233} Kafka (KRaft)",
+        "\u{f233} RabbitMQ (3-management)",
+        "\u{f233} Custom Image...",
     ];
 
     let catalog_items: Vec<ListItem> = catalogs
@@ -665,21 +698,35 @@ fn draw_deploy_tab(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, cat)| {
             let is_sel = i == app.deploy_form.catalog_idx;
-            let style = if is_sel {
+            let style = if is_sel && is_catalog_active {
                 Style::default().fg(Color::Cyan).bg(Color::Rgb(26, 32, 48)).add_modifier(Modifier::BOLD)
+            } else if is_sel {
+                Style::default().fg(Color::White).bg(Color::Rgb(20, 26, 38)).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(Color::Gray)
             };
             ListItem::new(Span::styled(*cat, style))
         })
         .collect();
 
+    let cat_border_style = if is_catalog_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let cat_title = if is_catalog_active {
+        Span::styled(" \u{f067} Catalog Presets [Active: ↑/↓ | → Form] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+    } else {
+        Span::styled(" \u{f067} Catalog Presets [← Select] ", Style::default().fg(Color::DarkGray))
+    };
+
     let cat_list = List::new(catalog_items).block(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title(Span::styled(" \u{f067} Catalog Presets [1-7] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+            .border_style(cat_border_style)
+            .title(cat_title),
     );
 
     f.render_widget(cat_list, chunks[0]);
@@ -702,12 +749,14 @@ fn draw_deploy_tab(f: &mut Frame, app: &App, area: Rect) {
     ];
 
     for (i, (label, val)) in fields.iter().enumerate() {
-        let is_focused = i == form.field_idx;
+        let is_focused = !is_catalog_active && i == form.field_idx;
         let prefix = if is_focused { " ▸ " } else { "   " };
         let label_style = if is_focused {
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-        } else {
+        } else if !is_catalog_active {
             Style::default().fg(Color::Gray)
+        } else {
+            Style::default().fg(Color::DarkGray)
         };
         let val_display = if val.is_empty() { "<none>" } else { val.as_str() };
         let val_style = if is_focused {
@@ -732,26 +781,45 @@ fn draw_deploy_tab(f: &mut Frame, app: &App, area: Rect) {
         "Default".to_string()
     };
 
-    let is_net_focused = form.field_idx == fields.len();
+    let is_net_focused = !is_catalog_active && form.field_idx == fields.len();
     let net_prefix = if is_net_focused { " ▸ " } else { "   " };
     form_lines.push(Line::from(vec![
         Span::styled(net_prefix, Style::default().fg(Color::Cyan)),
-        Span::styled(format!("{:<25}: ", "Bridge Network [n to cycle]"), if is_net_focused { Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::Gray) }),
+        Span::styled(
+            format!("{:<25}: ", "Bridge Network [n to cycle]"),
+            if is_net_focused {
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            },
+        ),
         Span::styled(net_display, Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)),
     ]));
 
     form_lines.push(Line::from(""));
     form_lines.push(Line::from(vec![
         Span::styled("  [ Press ENTER to Deploy & Start Container ]", Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled("   (Tab/Down: Next field | BackTab/Up: Prev field)", Style::default().fg(Color::DarkGray)),
+        Span::styled("   (↑/↓: Field | ←/Esc: Catalog | Tab: Next Tab)", Style::default().fg(Color::DarkGray)),
     ]));
+
+    let form_border_style = if !is_catalog_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let form_title = if !is_catalog_active {
+        Span::styled(" Provisioning Parameters [Active: ↑/↓ Field | Enter: Deploy] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+    } else {
+        Span::styled(" Provisioning Parameters ", Style::default().fg(Color::DarkGray))
+    };
 
     let form_paragraph = Paragraph::new(form_lines).block(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::White))
-            .title(" Provisioning Parameters "),
+            .border_style(form_border_style)
+            .title(form_title),
     );
 
     f.render_widget(form_paragraph, chunks[1]);
@@ -901,7 +969,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Tab::Networks => "[c]Create Net [d]Delete Net [a]Attach [x]Detach [t]Tag [p]Panorama [q]Quit",
         Tab::Snapshots => "[b]Branch [r]Restore [e]Export .tar.gz [d]Delete Snapshot [q]Quit",
         Tab::Panorama => "[Up/Down]Scroll [n]Select Net [Space]Pause Stream [q]Quit",
-        Tab::Deploy => "[1-7]Catalog [Tab/Down]Next [Enter]Deploy & Start [q]Quit",
+        Tab::Deploy => "[↑/↓]Select [→/Enter]Form [Type]Input [Enter]Deploy [Tab]Next Tab [q]Quit",
         Tab::Search => "[Type]Filter query [Esc]Clear query [q]Quit",
         Tab::Help => "[Tab]Switch View [q]Quit D4C",
     };

@@ -276,59 +276,86 @@ fn handle_tab_specific_keys(app: &mut App, code: KeyCode) {
 }
 
 fn handle_deploy_keys(app: &mut App, code: KeyCode) -> bool {
-    let form = &mut app.deploy_form;
+    // Never intercept Tab or BackTab, allowing global tab cycling!
+    if matches!(code, KeyCode::Tab | KeyCode::BackTab) {
+        return false;
+    }
 
-    match code {
-        KeyCode::Char(c @ '1'..='7') => {
-            let idx = (c as usize) - ('1' as usize);
-            form.catalog_idx = idx;
-            app.update_deploy_defaults();
-            true
-        }
-        KeyCode::Tab | KeyCode::Down => {
-            form.field_idx = (form.field_idx + 1) % 8;
-            true
-        }
-        KeyCode::BackTab | KeyCode::Up => {
-            form.field_idx = if form.field_idx == 0 { 7 } else { form.field_idx - 1 };
-            true
-        }
-        KeyCode::Char('n') if form.field_idx == 7 => {
-            // Cycle network selection
-            form.network_idx = (form.network_idx + 1) % (app.networks.len() + 1);
-            true
-        }
-        KeyCode::Enter => {
-            app.submit_deploy_form();
-            true
-        }
-        KeyCode::Backspace => {
-            match form.field_idx {
-                0 => { form.name_suffix.pop(); }
-                1 => { form.host_port.pop(); }
-                2 => { form.password.pop(); }
-                3 => { form.tag.pop(); }
-                4 => { form.cpus.pop(); }
-                5 => { form.memory.pop(); }
-                6 => { form.custom_image.pop(); }
-                _ => {}
+    match app.deploy_form.active_section {
+        crate::tui::app::DeploySection::Catalog => match code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                let form = &mut app.deploy_form;
+                form.catalog_idx = (form.catalog_idx + 1) % 7;
+                app.update_deploy_defaults();
+                true
             }
-            true
-        }
-        KeyCode::Char(ch) => {
-            match form.field_idx {
-                0 => form.name_suffix.push(ch),
-                1 => form.host_port.push(ch),
-                2 => form.password.push(ch),
-                3 => form.tag.push(ch),
-                4 => form.cpus.push(ch),
-                5 => form.memory.push(ch),
-                6 => form.custom_image.push(ch),
-                _ => {}
+            KeyCode::Up | KeyCode::Char('k') => {
+                let form = &mut app.deploy_form;
+                form.catalog_idx = if form.catalog_idx == 0 { 6 } else { form.catalog_idx - 1 };
+                app.update_deploy_defaults();
+                true
             }
-            true
-        }
-        _ => false,
+            KeyCode::Right | KeyCode::Enter => {
+                app.deploy_form.active_section = crate::tui::app::DeploySection::Form;
+                app.deploy_form.field_idx = 0;
+                true
+            }
+            // Do not intercept '1'..='7', 'q', 'r', Left, Right, Tab so global handlers work!
+            _ => false,
+        },
+        crate::tui::app::DeploySection::Form => match code {
+            KeyCode::Down => {
+                app.deploy_form.field_idx = (app.deploy_form.field_idx + 1) % 8;
+                true
+            }
+            KeyCode::Up => {
+                app.deploy_form.field_idx = if app.deploy_form.field_idx == 0 { 7 } else { app.deploy_form.field_idx - 1 };
+                true
+            }
+            KeyCode::Left | KeyCode::Esc => {
+                app.deploy_form.active_section = crate::tui::app::DeploySection::Catalog;
+                true
+            }
+            KeyCode::Enter => {
+                app.submit_deploy_form();
+                true
+            }
+            KeyCode::Char('n') | KeyCode::Char(' ') | KeyCode::Right if app.deploy_form.field_idx == 7 => {
+                // Cycle network selection
+                let count = app.networks.len() + 1;
+                app.deploy_form.network_idx = (app.deploy_form.network_idx + 1) % count;
+                true
+            }
+            KeyCode::Backspace => {
+                let form = &mut app.deploy_form;
+                match form.field_idx {
+                    0 => { form.name_suffix.pop(); }
+                    1 => { form.host_port.pop(); }
+                    2 => { form.password.pop(); }
+                    3 => { form.tag.pop(); }
+                    4 => { form.cpus.pop(); }
+                    5 => { form.memory.pop(); }
+                    6 => { form.custom_image.pop(); }
+                    _ => {}
+                }
+                true
+            }
+            KeyCode::Char(ch) => {
+                let form = &mut app.deploy_form;
+                match form.field_idx {
+                    0 => form.name_suffix.push(ch),
+                    1 => form.host_port.push(ch),
+                    2 => form.password.push(ch),
+                    3 => form.tag.push(ch),
+                    4 => form.cpus.push(ch),
+                    5 => form.memory.push(ch),
+                    6 => form.custom_image.push(ch),
+                    _ => {}
+                }
+                true
+            }
+            _ => false,
+        },
     }
 }
 
