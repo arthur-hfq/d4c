@@ -111,7 +111,7 @@ pub fn list_bridge_networks() -> Result<Vec<NetworkInfo>> {
 
         let labels = item.get("labels").and_then(|v| v.as_object());
         let is_d4c = name.starts_with("d4c_net_")
-            || labels.map_or(false, |l| l.contains_key("d4c.managed"));
+            || labels.is_some_and(|l| l.contains_key("d4c.managed"));
 
         if !is_d4c {
             continue;
@@ -126,18 +126,17 @@ pub fn list_bridge_networks() -> Result<Vec<NetworkInfo>> {
         let mut gateway = None;
         let mut containers = Vec::new();
 
-        if let Ok(insp_out) = inspect_output {
-            if insp_out.status.success() {
-                let insp_json: Vec<Value> = serde_json::from_slice(&insp_out.stdout).unwrap_or_default();
-                if let Some(first) = insp_json.first() {
-                    // Extract subnet and gateway
-                    if let Some(subnets) = first.get("subnets").and_then(|v| v.as_array()) {
-                        if let Some(first_sub) = subnets.first() {
-                            subnet = first_sub.get("subnet").and_then(|v| v.as_str()).map(String::from);
-                            gateway = first_sub.get("gateway").and_then(|v| v.as_str()).map(String::from);
-                        }
-                    }
-                }
+        if let Ok(insp_out) = inspect_output
+            && insp_out.status.success()
+        {
+            let insp_json: Vec<Value> = serde_json::from_slice(&insp_out.stdout).unwrap_or_default();
+            if let Some(first_sub) = insp_json.first()
+                .and_then(|first| first.get("subnets"))
+                .and_then(|v| v.as_array())
+                .and_then(|subnets| subnets.first())
+            {
+                subnet = first_sub.get("subnet").and_then(|v| v.as_str()).map(String::from);
+                gateway = first_sub.get("gateway").and_then(|v| v.as_str()).map(String::from);
             }
         }
 
@@ -320,7 +319,7 @@ pub async fn panorama_logs(network: &str) -> Result<()> {
             println!("\nTerminating Panorama stream.");
         }
         _ = async {
-            while let Some(_) = join_set.join_next().await {}
+            while join_set.join_next().await.is_some() {}
         } => {}
     }
 

@@ -13,6 +13,7 @@ pub struct Engine;
 
 impl Engine {
     /// Provision and launch a service from catalog or custom image
+    #[allow(clippy::too_many_arguments)]
     pub fn up(
         service_type: ServiceCatalog,
         port: Option<u16>,

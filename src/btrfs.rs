@@ -399,10 +399,8 @@ pub fn delete_subvolume_or_dir(path: &Path) -> Result<()> {
         .arg(path)
         .output();
 
-    if let Ok(out) = btrfs_del {
-        if out.status.success() {
-            return Ok(());
-        }
+    if btrfs_del.is_ok_and(|out| out.status.success()) {
+        return Ok(());
     }
 
     // Fallback: standard directory removal
@@ -474,10 +472,8 @@ fn copy_dir_reflink(src: &Path, dst: &Path) -> Result<()> {
         .arg(dst)
         .status();
 
-    if let Ok(s) = status {
-        if s.success() {
-            return Ok(());
-        }
+    if status.is_ok_and(|s| s.success()) {
+        return Ok(());
     }
 
     // Fallback: copy tree manually
