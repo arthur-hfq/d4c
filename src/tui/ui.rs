@@ -46,7 +46,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 
     // Title Block
     let title_line = Line::from(vec![
-        Span::styled(" \u{f0e7} [D4C-GRID] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(" \u{f0e7} [D4C] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         Span::styled("NODE CONTROL ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
         Span::styled("v0.1 ", Style::default().fg(Color::DarkGray)),
     ]);
@@ -195,9 +195,15 @@ fn draw_services_tab(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_service_detail_card(f: &mut Frame, app: &App, svc: &crate::model::ServiceInfo, area: Rect) {
+    let top_height = if svc.networks.len() > 1 {
+        (9 + svc.networks.len() as u16).min(area.height.saturating_sub(4)).max(10)
+    } else {
+        10.min(area.height.saturating_sub(4)).max(8)
+    };
+
     let card_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(12), Constraint::Min(8)])
+        .constraints([Constraint::Length(top_height), Constraint::Min(4)])
         .split(area);
 
     let status_badge = if svc.is_running() {
@@ -215,11 +221,6 @@ fn draw_service_detail_card(f: &mut Frame, app: &App, svc: &crate::model::Servic
     let (cpus, mem) = svc.formatted_limits();
     let port_str = format!("{}:{}", svc.host_port.unwrap_or(svc.container_port), svc.container_port);
 
-    // Extract network and container IP
-    let net_str = svc.network.as_deref().unwrap_or("podman (default bridge)");
-    let ip_key = format!("{}:{}", svc.name, net_str);
-    let ip_str = app.container_ips.get(&ip_key).map(|s| s.as_str()).unwrap_or("-");
-
     let branch_info = if let Some(parent) = &svc.branch_parent {
         format!(" \u{f126} Branch of: {}", parent)
     } else {
@@ -228,7 +229,18 @@ fn draw_service_detail_card(f: &mut Frame, app: &App, svc: &crate::model::Servic
 
     let conn_url = svc.connection_url();
 
-    let details_lines = vec![
+    let get_ip = |net_name: &str| -> &str {
+        let key = format!("{}:{}", svc.name, net_name);
+        if let Some(ip) = app.container_ips.get(&key) {
+            ip.as_str()
+        } else if let Some(net) = app.networks.iter().find(|n| n.name == net_name) {
+            net.container_ips.get(&svc.name).map(|s| s.as_str()).unwrap_or("-")
+        } else {
+            "-"
+        }
+    };
+
+    let mut details_lines = vec![
         Line::from(vec![
             Span::styled(" \u{f013} ", Style::default().fg(Color::Cyan)),
             Span::styled(&svc.name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
@@ -262,16 +274,34 @@ fn draw_service_detail_card(f: &mut Frame, app: &App, svc: &crate::model::Servic
             Span::styled(svc.volume_path.display().to_string(), Style::default().fg(Color::DarkGray)),
         ]),
         Line::from(vec![
-            Span::raw("  Networking:   \u{f0e8} Bridge: "),
-            Span::styled(net_str, Style::default().fg(Color::Cyan)),
-            Span::raw("  |  IP: "),
-            Span::styled(ip_str, Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(vec![
             Span::styled("  \u{f0c1} URL: ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
             Span::styled(conn_url, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
         ]),
     ];
+
+    if svc.networks.len() > 1 {
+        details_lines.push(Line::from(vec![
+            Span::styled(format!("  \u{f0e8} Attached Networks ({}):", svc.networks.len()), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ]));
+        for net_name in &svc.networks {
+            let ip_str = get_ip(net_name);
+            details_lines.push(Line::from(vec![
+                Span::raw("    \u{f0da} "),
+                Span::styled(format!("{:<20}", net_name), Style::default().fg(Color::LightCyan)),
+                Span::raw("  IP: "),
+                Span::styled(ip_str, Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)),
+            ]));
+        }
+    } else {
+        let net_name = svc.networks.first().map(|s| s.as_str()).or(svc.network.as_deref()).unwrap_or("podman (default bridge)");
+        let ip_str = get_ip(net_name);
+        details_lines.push(Line::from(vec![
+            Span::raw("  Networking:   \u{f0e8} Bridge: "),
+            Span::styled(net_name, Style::default().fg(Color::Cyan)),
+            Span::raw("  |  IP: "),
+            Span::styled(ip_str, Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)),
+        ]));
+    }
 
     let detail_block = Block::default()
         .borders(Borders::ALL)
@@ -810,56 +840,54 @@ fn draw_search_tab(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_help_tab(f: &mut Frame, _app: &App, area: Rect) {
-    let help_text = vec![
-        Line::from(Span::styled(" \u{f059} [D4C-GRID] KEYBOARD CONTROLS & ARCHITECTURE GUIDE", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-        Line::from(" ══════════════════════════════════════════════════════════════════════════════"),
-        Line::from(vec![
-            Span::styled(" [1..7] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::raw("Quick switch between views (Services, Networks, Snapshots, Panorama, Deploy, Search, Help)"),
-        ]),
-        Line::from(vec![
-            Span::styled(" [Tab / BackTab] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::raw("Cycle tabs forward / backward"),
-        ]),
-        Line::from(vec![
-            Span::styled(" [Up / Down] [j / k] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::raw("Fluid selection cursor in lists and tables"),
-        ]),
-        Line::from(vec![
-            Span::styled(" [r] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::raw("Force immediate refresh of Podman container states & Btrfs volumes"),
-        ]),
-        Line::from(vec![
-            Span::styled(" [q] / [Esc] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::raw("Quit D4C-GRID or close current popup modal"),
-        ]),
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    let left_lines = vec![
+        Line::from(Span::styled(" GLOBAL CONTROLS & NAVIGATION:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from("  [1..7] Switch views       [Tab] Next tab"),
+        Line::from("  [↑/↓/j/k] Move cursor     [r] Refresh states"),
+        Line::from("  [q / Esc] Quit D4C or close active modal"),
         Line::from(""),
-        Line::from(Span::styled(" SERVICE MANAGEMENT ACTIONS:", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))),
-        Line::from("   [s] Start / Restart container    [x] Stop container"),
-        Line::from("   [c] Clone / Branch via Btrfs     [m] Merge branch changes into target"),
-        Line::from("   [u] Tune CPU & RAM Limits        [t] Edit project tag metadata"),
-        Line::from("   [b] Backup Volume to .tar.gz     [d] Delete container (preserves volume)"),
-        Line::from("   [w] Wipe (DESTROY data & vol)    [n] Hot-attach container to bridge network"),
-        Line::from("   [X] Detach from ALL networks"),
-        Line::from(""),
-        Line::from(Span::styled(" NETWORK MANAGEMENT ACTIONS:", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))),
-        Line::from("   [c] Create new bridge network    [d] Delete network"),
-        Line::from("   [a] Attach service container     [x] Detach service container"),
-        Line::from("   [t] Tag network                  [p] Open Panorama real-time multi-log stream"),
-        Line::from(""),
-        Line::from(Span::styled(" FONT AWESOME ICONS LEGEND:", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))),
-        Line::from("   \u{f233} Container   \u{f0e8} Bridge Network   \u{f0c2} Btrfs Snapshot   \u{f126} Branch Lineage"),
-        Line::from("   \u{f2db} CPU Core    \u{f080} RAM Quota         \u{f0a0} Storage Disk     \u{f0ec} Network Port"),
-        Line::from("   \u{f04b} Running     \u{f04d} Stopped          \u{f02b} Project Tag      \u{f0c1} Connection URI"),
+        Line::from(Span::styled(" SERVICE ACTIONS [Tab 1 - Services]:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from("  [s] Start / Restart       [x] Stop container"),
+        Line::from("  [c] Branch via Btrfs CoW  [m] Merge branch"),
+        Line::from("  [u] Tune CPU & RAM limits [t] Edit tag"),
+        Line::from("  [b] Backup volume tar.gz  [n] Attach to bridge"),
+        Line::from("  [d] Delete container      [X] Detach all nets"),
+        Line::from("  [w] Wipe (DESTROY container & volume)"),
     ];
 
-    let block = Block::default()
+    let right_lines = vec![
+        Line::from(Span::styled(" NETWORKS & SNAPSHOTS [Tabs 2 & 3]:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from("  [c] Create bridge network [d] Delete bridge / snapshot"),
+        Line::from("  [a] Attach container      [x] Detach container"),
+        Line::from("  [t] Edit network tag      [p] Panorama log stream"),
+        Line::from("  [b] Branch snapshot       [r] Restore volume"),
+        Line::from("  [e] Export snapshot tar.gz"),
+        Line::from(""),
+        Line::from(Span::styled(" FONT AWESOME ICONS LEGEND:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from("  \u{f233} Container   \u{f0e8} Bridge     \u{f0c2}  Snapshot   \u{f126} Branch"),
+        Line::from("  \u{f2db} CPU Core    \u{f080} RAM Quota   \u{f0a0} Storage     \u{f0ec} Port"),
+        Line::from("  \u{f04b} Running     \u{f04d} Stopped     \u{f02b} Tag         \u{f0c1} URL"),
+    ];
+
+    let left_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan))
-        .title(" Help & Keyboard Cheatsheet ");
+        .title(Span::styled(" \u{f059} [D4C] Keyboard Controls ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
 
-    f.render_widget(Paragraph::new(help_text).block(block), area);
+    let right_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::White))
+        .title(Span::styled(" Topology & Icons Cheatsheet ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
+
+    f.render_widget(Paragraph::new(left_lines).block(left_block), chunks[0]);
+    f.render_widget(Paragraph::new(right_lines).block(right_block), chunks[1]);
 }
 
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
@@ -875,7 +903,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Tab::Panorama => "[Up/Down]Scroll [n]Select Net [Space]Pause Stream [q]Quit",
         Tab::Deploy => "[1-7]Catalog [Tab/Down]Next [Enter]Deploy & Start [q]Quit",
         Tab::Search => "[Type]Filter query [Esc]Clear query [q]Quit",
-        Tab::Help => "[Tab]Switch View [q]Quit D4C-GRID",
+        Tab::Help => "[Tab]Switch View [q]Quit D4C",
     };
 
     let hints_p = Paragraph::new(Span::styled(hints, Style::default().fg(Color::DarkGray)));

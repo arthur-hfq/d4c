@@ -327,6 +327,10 @@ pub fn attach_container(service: &str, network: &str) -> Result<()> {
 
     let mut store = StateStore::load().unwrap_or_default();
     if let Some(svc) = store.services.get_mut(service) {
+        if !svc.networks.contains(&net_name) {
+            svc.networks.push(net_name.clone());
+            svc.networks.sort();
+        }
         svc.network = Some(net_name);
         let _ = store.save();
     }
@@ -349,10 +353,11 @@ pub fn detach_container(service: &str, network: &str) -> Result<()> {
     }
 
     let mut store = StateStore::load().unwrap_or_default();
-    if let Some(svc) = store.services.get_mut(service)
-        && svc.network.as_deref() == Some(&net_name)
-    {
-        svc.network = Some("podman".to_string());
+    if let Some(svc) = store.services.get_mut(service) {
+        svc.networks.retain(|n| n != &net_name);
+        if svc.network.as_deref() == Some(&net_name) {
+            svc.network = svc.networks.first().cloned();
+        }
         let _ = store.save();
     }
 
@@ -467,6 +472,14 @@ pub fn disconnect_all_networks(service: &str) -> Result<()> {
             let _ = detach_container(service, net);
         }
     }
+
+    let mut store = StateStore::load().unwrap_or_default();
+    if let Some(svc) = store.services.get_mut(service) {
+        svc.networks.clear();
+        svc.network = None;
+        let _ = store.save();
+    }
+
     Ok(())
 }
 

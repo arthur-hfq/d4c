@@ -89,6 +89,7 @@ pub fn run_service_container(params: RunContainerParams) -> Result<String> {
 
     let now_str = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
 
+    let initial_networks = params.network.map(|s| vec![s.to_string()]).unwrap_or_default();
     let state = ServiceState {
         name: params.name.to_string(),
         catalog: params.catalog,
@@ -97,6 +98,7 @@ pub fn run_service_container(params: RunContainerParams) -> Result<String> {
         container_port: params.container_port,
         tag: params.tag.map(|s| s.to_string()),
         volume_path: params.volume_path.to_path_buf(),
+        networks: initial_networks,
         network: params.network.map(|s| s.to_string()),
         cpus: params.cpus.map(|s| s.to_string()),
         memory: params.memory.map(|s| s.to_string()),
@@ -261,16 +263,24 @@ pub fn list_services() -> Result<Vec<ServiceInfo>> {
                 .map(String::from)
                 .or_else(|| store.services.get(&name).and_then(|s| s.branch_parent.clone()));
 
-            let network = item.get("Networks")
+            let networks: Vec<String> = item.get("Networks")
                 .and_then(|v| {
                     if let Some(arr) = v.as_array() {
-                        arr.first().and_then(|s| s.as_str())
+                        let mut list: Vec<String> = arr.iter().filter_map(|s| s.as_str().map(String::from)).collect();
+                        list.sort();
+                        Some(list)
                     } else {
-                        v.as_str()
+                        v.as_str().map(|s| vec![s.to_string()])
                     }
                 })
-                .map(String::from)
-                .or_else(|| store.services.get(&name).and_then(|s| s.network.clone()));
+                .unwrap_or_else(|| {
+                    store.services.get(&name)
+                        .and_then(|s| s.network.clone())
+                        .map(|n| vec![n])
+                        .unwrap_or_default()
+                });
+
+            let network = networks.first().cloned();
 
             let created_at = item.get("CreatedAt")
                 .or_else(|| item.get("Created"))
@@ -291,6 +301,7 @@ pub fn list_services() -> Result<Vec<ServiceInfo>> {
                 container_port,
                 tag,
                 volume_path,
+                networks,
                 network,
                 cpus,
                 memory,
@@ -305,6 +316,11 @@ pub fn list_services() -> Result<Vec<ServiceInfo>> {
     // Include stopped/uncreated services stored in state store that may not be active in podman
     for (name, s) in &store.services {
         if !services_map.contains_key(name) {
+            let net_list = if !s.networks.is_empty() {
+                s.networks.clone()
+            } else {
+                s.network.clone().map(|n| vec![n]).unwrap_or_default()
+            };
             services_map.insert(
                 name.clone(),
                 ServiceInfo {
@@ -317,6 +333,7 @@ pub fn list_services() -> Result<Vec<ServiceInfo>> {
                     container_port: s.container_port,
                     tag: s.tag.clone(),
                     volume_path: s.volume_path.clone(),
+                    networks: net_list,
                     network: s.network.clone(),
                     cpus: s.cpus.clone(),
                     memory: s.memory.clone(),
@@ -457,7 +474,23 @@ fn parse_inspect_json(val: &Value, state_opt: Option<&ServiceState>) -> ServiceI
         .map(String::from)
         .or_else(|| state_opt.and_then(|s| s.branch_parent.clone()));
 
-    let network = state_opt.and_then(|s| s.network.clone());
+    let networks: Vec<String> = val
+        .get("NetworkSettings")
+        .and_then(|n| n.get("Networks"))
+        .and_then(|n| n.as_object())
+        .map(|nets| {
+            let mut list: Vec<String> = nets.keys().cloned().collect();
+            list.sort();
+            list
+        })
+        .unwrap_or_else(|| {
+            state_opt
+                .and_then(|s| s.network.clone())
+                .map(|n| vec![n])
+                .unwrap_or_default()
+        });
+
+    let network = networks.first().cloned();
     let cpus = state_opt.and_then(|s| s.cpus.clone());
     let memory = state_opt.and_then(|s| s.memory.clone());
 
@@ -476,6 +509,7 @@ fn parse_inspect_json(val: &Value, state_opt: Option<&ServiceState>) -> ServiceI
         container_port,
         tag,
         volume_path,
+        networks,
         network,
         cpus,
         memory,

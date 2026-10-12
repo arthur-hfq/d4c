@@ -136,7 +136,7 @@ pub enum Commands {
     #[command(subcommand)]
     Net(NetCommands),
 
-    /// Export active grid topology to a docker-compose.yml file
+    /// Export active topology to a docker-compose.yml file
     Compose {
         /// Output destination path
         #[arg(short, long, default_value = "./d4c-compose.yml")]

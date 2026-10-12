@@ -150,7 +150,11 @@ impl Engine {
             };
 
             let tag_str = svc.tag.clone().unwrap_or_else(|| "-".to_string());
-            let net_str = svc.network.clone().unwrap_or_else(|| "default".to_string());
+            let net_str = if svc.networks.is_empty() {
+                svc.network.clone().unwrap_or_else(|| "-".to_string())
+            } else {
+                svc.networks.join(", ")
+            };
 
             let mut limits = Vec::new();
             if let Some(c) = &svc.cpus {
@@ -561,7 +565,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Export active grid topology to a docker-compose.yml file
+    /// Export active topology to a docker-compose.yml file
     pub fn compose(output: PathBuf, mode: &str) -> Result<()> {
         let green = Style::new().green().bold();
         let services = podman::list_services()?;
