@@ -31,13 +31,13 @@ impl Tab {
 
     pub fn title(&self) -> &'static str {
         match self {
-            Tab::Services => "\u{f233} Services",
-            Tab::Networks => "\u{f0e8} Networks",
-            Tab::Snapshots => "\u{f0c2} Snapshots",
-            Tab::Panorama => "\u{f06e} Panorama",
-            Tab::Deploy => "\u{f067} Deploy",
-            Tab::Search => "\u{f002} Search",
-            Tab::Help => "\u{f059} Help",
+            Tab::Services => "\u{f233}  Services",
+            Tab::Networks => "\u{f0e8}  Networks",
+            Tab::Snapshots => "\u{f0c2}  Snapshots",
+            Tab::Panorama => "\u{f06e}  Panorama",
+            Tab::Deploy => "\u{f067}  Deploy",
+            Tab::Search => "\u{f002}  Search",
+            Tab::Help => "\u{f059}  Help",
         }
     }
 }
@@ -88,6 +88,16 @@ pub enum Modal {
         service: String,
         network_idx: usize,
         networks: Vec<String>,
+    },
+    NetworkAttachContainer {
+        network: String,
+        container_idx: usize,
+        containers: Vec<String>,
+    },
+    NetworkDetachContainer {
+        network: String,
+        container_idx: usize,
+        containers: Vec<String>,
     },
     CreateNetwork {
         name_suffix: String,
@@ -497,6 +507,38 @@ impl App {
         }
     }
 
+    pub fn open_network_attach_container_modal(&mut self) {
+        if let Some(net) = self.selected_network() {
+            let net_name = net.name.clone();
+            let all_services: Vec<String> = self.services.iter().map(|s| s.name.clone()).collect();
+            if all_services.is_empty() {
+                self.set_toast("No services available to attach to network", true);
+                return;
+            }
+            self.modal = Modal::NetworkAttachContainer {
+                network: net_name,
+                container_idx: 0,
+                containers: all_services,
+            };
+        }
+    }
+
+    pub fn open_network_detach_container_modal(&mut self) {
+        if let Some(net) = self.selected_network() {
+            let net_name = net.name.clone();
+            let attached_containers = net.containers.clone();
+            if attached_containers.is_empty() {
+                self.set_toast(&format!("No containers currently attached to network '{}'", net_name), true);
+                return;
+            }
+            self.modal = Modal::NetworkDetachContainer {
+                network: net_name,
+                container_idx: 0,
+                containers: attached_containers,
+            };
+        }
+    }
+
     pub fn open_create_network_modal(&mut self) {
         self.modal = Modal::CreateNetwork {
             name_suffix: "backend".to_string(),
@@ -513,17 +555,17 @@ impl App {
             let cpus_opt = if cpus.trim().is_empty() { None } else { Some(cpus.trim().to_string()) };
             let mem_opt = if mem.trim().is_empty() { None } else { Some(mem.trim().to_string()) };
 
-            let res = crate::engine::Engine::snap(crate::cli::SnapCommands::Branch {
-                service: service.clone(),
-                suffix: suffix.clone(),
-                port: port_parsed,
-                cpus: cpus_opt,
-                memory: mem_opt,
-            });
+            let res = crate::engine::Engine::branch_service(
+                service,
+                suffix,
+                port_parsed,
+                cpus_opt,
+                mem_opt,
+            );
 
             match res {
-                Ok(_) => {
-                    self.set_toast(&format!("[OK] Branch '{}_{}' created successfully", service, suffix), false);
+                Ok((b_name, _, b_port)) => {
+                    self.set_toast(&format!("[OK] Branch '{}' created on port {}", b_name, b_port), false);
                     self.refresh_all();
                 }
                 Err(e) => {
@@ -539,10 +581,10 @@ impl App {
             let cpus_opt = if cpus.trim().is_empty() { None } else { Some(cpus.trim().to_string()) };
             let mem_opt = if mem.trim().is_empty() { None } else { Some(mem.trim().to_string()) };
 
-            let res = crate::engine::Engine::update(
+            let res = podman::update_service_resources(
                 service,
-                cpus_opt,
-                mem_opt,
+                cpus_opt.as_deref(),
+                mem_opt.as_deref(),
             );
 
             match res {
@@ -562,10 +604,7 @@ impl App {
         if let Modal::Merge { source, targets, target_idx } = &self.modal
             && let Some(target) = targets.get(*target_idx)
         {
-            let res = crate::engine::Engine::snap(crate::cli::SnapCommands::Merge {
-                source: source.clone(),
-                target: target.clone(),
-            });
+            let res = crate::engine::Engine::merge_service_branches(source, target);
 
             match res {
                 Ok(_) => {
@@ -589,7 +628,8 @@ impl App {
                 let _ = store.set_network_tag(target, tag_opt.clone());
                 self.set_toast(&format!("[OK] Tag updated for network '{}'", target), false);
             } else {
-                let res = crate::engine::Engine::tag(target, tag_opt);
+                let mut store = StateStore::load().unwrap_or_default();
+                let res = store.set_service_tag(target, tag_opt);
                 match res {
                     Ok(_) => self.set_toast(&format!("[OK] Tag updated for service '{}'", target), false),
                     Err(e) => self.set_toast(&format!("[ERROR] Tag failed: {}", e), true),
@@ -603,7 +643,7 @@ impl App {
     pub fn submit_wipe_modal(&mut self) {
         if let Modal::Wipe { service, confirm_input } = &self.modal {
             if confirm_input.trim() == "DESTROY" {
-                let res = crate::engine::Engine::wipe(service, true);
+                let res = crate::engine::Engine::wipe_service_storage(service);
                 match res {
                     Ok(_) => {
                         self.set_toast(&format!("[OK] Service '{}' and data completely destroyed", service), false);
@@ -638,6 +678,42 @@ impl App {
         self.modal = Modal::None;
     }
 
+    pub fn submit_network_attach_container_modal(&mut self) {
+        if let Modal::NetworkAttachContainer { network, container_idx, containers } = &self.modal
+            && let Some(c_name) = containers.get(*container_idx)
+        {
+            let res = net::attach_container(c_name, network);
+            match res {
+                Ok(_) => {
+                    self.set_toast(&format!("[OK] Attached container '{}' to network '{}'", c_name, network), false);
+                    self.refresh_all();
+                }
+                Err(e) => {
+                    self.set_toast(&format!("[ERROR] Attach failed: {}", e), true);
+                }
+            }
+        }
+        self.modal = Modal::None;
+    }
+
+    pub fn submit_network_detach_container_modal(&mut self) {
+        if let Modal::NetworkDetachContainer { network, container_idx, containers } = &self.modal
+            && let Some(c_name) = containers.get(*container_idx)
+        {
+            let res = net::detach_container(c_name, network);
+            match res {
+                Ok(_) => {
+                    self.set_toast(&format!("[OK] Detached container '{}' from network '{}'", c_name, network), false);
+                    self.refresh_all();
+                }
+                Err(e) => {
+                    self.set_toast(&format!("[ERROR] Detach failed: {}", e), true);
+                }
+            }
+        }
+        self.modal = Modal::None;
+    }
+
     pub fn submit_create_network_modal(&mut self) {
         if let Modal::CreateNetwork { name_suffix, tag, subnet, .. } = &self.modal {
             let tag_opt = if tag.trim().is_empty() { None } else { Some(tag.trim()) };
@@ -660,7 +736,7 @@ impl App {
     pub fn execute_pending_action(&mut self, action: PendingAction) {
         match action {
             PendingAction::DeleteService(name) => {
-                let res = crate::engine::Engine::rm(&name);
+                let res = podman::remove_container(&name, true);
                 match res {
                     Ok(_) => self.set_toast(&format!("[OK] Container '{}' deleted (data preserved)", name), false),
                     Err(e) => self.set_toast(&format!("[ERROR] Delete failed: {}", e), true),
@@ -681,20 +757,14 @@ impl App {
                 }
             }
             PendingAction::BackupService(name) => {
-                let res = crate::engine::Engine::snap(crate::cli::SnapCommands::Export {
-                    service: name.clone(),
-                    destination: None,
-                });
+                let res = crate::btrfs::export_service_snapshot(&name, None);
                 match res {
-                    Ok(_) => self.set_toast(&format!("[OK] Volume backup exported for '{}'", name), false),
+                    Ok(path) => self.set_toast(&format!("[OK] Volume backup exported: {:?}", path), false),
                     Err(e) => self.set_toast(&format!("[ERROR] Backup export failed: {}", e), true),
                 }
             }
             PendingAction::RestoreSnapshot { service, snapshot } => {
-                let res = crate::engine::Engine::snap(crate::cli::SnapCommands::Restore {
-                    service: service.clone(),
-                    snapshot: snapshot.clone(),
-                });
+                let res = crate::engine::Engine::restore_service_snapshot(&service, &snapshot);
                 match res {
                     Ok(_) => self.set_toast(&format!("[OK] Service '{}' restored to snapshot '{}'", service, snapshot), false),
                     Err(e) => self.set_toast(&format!("[ERROR] Restore failed: {}", e), true),
@@ -746,7 +816,7 @@ impl App {
             None
         };
 
-        let res = crate::engine::Engine::up(
+        let res = crate::engine::Engine::provision_service(
             cat,
             port_parsed,
             name_opt,
@@ -759,8 +829,8 @@ impl App {
         );
 
         match res {
-            Ok(_) => {
-                self.set_toast("[SUCCESS] Service deployed and running", false);
+            Ok((svc_name, _)) => {
+                self.set_toast(&format!("[SUCCESS] Service '{}' deployed and running", svc_name), false);
                 self.tab = Tab::Services;
                 self.refresh_all();
             }

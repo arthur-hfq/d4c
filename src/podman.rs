@@ -60,10 +60,9 @@ pub fn run_service_container(params: RunContainerParams) -> Result<String> {
         cmd.args(["--memory", mem]);
     }
 
-    // Network connection
-    if let Some(net) = params.network {
-        cmd.args(["--network", net]);
-    }
+    // Network connection: default to podman bridge network so rootless containers support hot-attach
+    let network_to_use = params.network.unwrap_or("podman");
+    cmd.args(["--network", network_to_use]);
 
     // Environment variables
     for (k, v) in params.env {

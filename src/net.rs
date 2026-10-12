@@ -50,8 +50,31 @@ pub fn normalize_network_name(name: &str) -> String {
     }
 }
 
+/// Ensures rootless Podman network configuration is compatible with netavark
+pub fn ensure_rootless_network_config() {
+    if let Ok(home) = std::env::var("HOME") {
+        let conf_dir = std::path::PathBuf::from(home).join(".config").join("containers");
+        let conf_file = conf_dir.join("containers.conf");
+        if !conf_file.exists() {
+            let _ = std::fs::create_dir_all(&conf_dir);
+            let _ = std::fs::write(&conf_file, "[network]\nfirewall_driver = \"none\"\n");
+        } else if let Ok(content) = std::fs::read_to_string(&conf_file)
+            && !content.contains("firewall_driver")
+        {
+            let mut updated = content;
+            if !updated.contains("[network]") {
+                updated.push_str("\n[network]\nfirewall_driver = \"none\"\n");
+            } else {
+                updated = updated.replace("[network]", "[network]\nfirewall_driver = \"none\"");
+            }
+            let _ = std::fs::write(&conf_file, updated);
+        }
+    }
+}
+
 /// Creates a new isolated bridge network in Podman with d4c metadata labels
 pub fn create_bridge_network(name: &str, tag: Option<&str>, subnet: Option<&str>) -> Result<String> {
+    ensure_rootless_network_config();
     let net_name = normalize_network_name(name);
 
     let mut cmd = Command::new("podman");
@@ -64,6 +87,16 @@ pub fn create_bridge_network(name: &str, tag: Option<&str>, subnet: Option<&str>
 
     if let Some(s) = subnet {
         cmd.args(["--subnet", s]);
+    }
+
+    // Disable DNS plugin if aardvark-dns is not installed to prevent netavark IO errors
+    let has_aardvark = Command::new("which")
+        .arg("aardvark-dns")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !has_aardvark {
+        cmd.arg("--disable-dns");
     }
 
     cmd.arg(&net_name);
@@ -212,8 +245,68 @@ pub fn remove_bridge_network(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Migrates a legacy container running in pasta mode to a bridge network without losing Btrfs volume data
+pub fn migrate_pasta_container_to_bridge(service: &str, network: &str) -> Result<()> {
+    let store = StateStore::load().unwrap_or_default();
+    let service_state = store.get_service(service).cloned();
+
+    let (catalog, image, host_port, container_port, volume_path, env_vars, cpus, memory, tag, branch_parent) = match service_state {
+        Some(s) => {
+            let env: Vec<(String, String)> = s.env.into_iter().collect();
+            (s.catalog, s.image, s.host_port, s.container_port, s.volume_path, env, s.cpus, s.memory, s.tag, s.branch_parent)
+        }
+        None => {
+            let insp = crate::podman::inspect_service(service)?
+                .context(format!("Service '{}' not found for migration", service))?;
+            let env = insp.catalog.default_env(None, insp.container_port);
+            let p = insp.host_port.unwrap_or(insp.container_port);
+            (insp.catalog, insp.image, p, insp.container_port, insp.volume_path, env, insp.cpus, insp.memory, insp.tag, insp.branch_parent)
+        }
+    };
+
+    let was_running = crate::podman::inspect_service(service)?
+        .map(|s| s.is_running())
+        .unwrap_or(true);
+
+    if was_running {
+        let _ = crate::podman::stop_service(service);
+    }
+
+    crate::podman::remove_container(service, true)?;
+
+    let container_mount = catalog.default_data_dir();
+    crate::podman::run_service_container(crate::podman::RunContainerParams {
+        name: service,
+        catalog,
+        image: &image,
+        host_port,
+        container_port,
+        volume_path: &volume_path,
+        container_mount,
+        env: &env_vars,
+        cpus: cpus.as_deref(),
+        memory: memory.as_deref(),
+        network: Some(network),
+        tag: tag.as_deref(),
+        branch_parent: branch_parent.as_deref(),
+    })?;
+
+    if !was_running {
+        let _ = crate::podman::stop_service(service);
+    }
+
+    let mut store = StateStore::load().unwrap_or_default();
+    if let Some(svc) = store.services.get_mut(service) {
+        svc.network = Some(network.to_string());
+        let _ = store.save();
+    }
+
+    Ok(())
+}
+
 /// Hot-attaches a service container to a bridge network
 pub fn attach_container(service: &str, network: &str) -> Result<()> {
+    ensure_rootless_network_config();
     let net_name = normalize_network_name(network);
 
     let output = Command::new("podman")
@@ -223,7 +316,19 @@ pub fn attach_container(service: &str, network: &str) -> Result<()> {
 
     if !output.status.success() {
         let err_msg = String::from_utf8_lossy(&output.stderr);
+        if err_msg.contains("pasta") {
+            // Container was started with pasta network mode.
+            // Seamlessly migrate it to bridge network mode preserving its Btrfs subvolume!
+            migrate_pasta_container_to_bridge(service, &net_name)?;
+            return Ok(());
+        }
         bail!("Failed to attach container '{}' to network '{}': {}", service, net_name, err_msg.trim());
+    }
+
+    let mut store = StateStore::load().unwrap_or_default();
+    if let Some(svc) = store.services.get_mut(service) {
+        svc.network = Some(net_name);
+        let _ = store.save();
     }
 
     Ok(())
@@ -241,6 +346,14 @@ pub fn detach_container(service: &str, network: &str) -> Result<()> {
     if !output.status.success() {
         let err_msg = String::from_utf8_lossy(&output.stderr);
         bail!("Failed to detach container '{}' from network '{}': {}", service, net_name, err_msg.trim());
+    }
+
+    let mut store = StateStore::load().unwrap_or_default();
+    if let Some(svc) = store.services.get_mut(service)
+        && svc.network.as_deref() == Some(&net_name)
+    {
+        svc.network = Some("podman".to_string());
+        let _ = store.save();
     }
 
     Ok(())

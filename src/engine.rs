@@ -12,9 +12,9 @@ use std::path::PathBuf;
 pub struct Engine;
 
 impl Engine {
-    /// Provision and launch a service from catalog or custom image
+    /// Silent provisioning of a service (used by TUI and CLI)
     #[allow(clippy::too_many_arguments)]
-    pub fn up(
+    pub fn provision_service(
         service_type: ServiceCatalog,
         port: Option<u16>,
         name: Option<String>,
@@ -24,27 +24,16 @@ impl Engine {
         memory: Option<String>,
         network: Option<String>,
         image: Option<String>,
-    ) -> Result<()> {
-        let bold = Style::new().bold();
-        let green = Style::new().green().bold();
-        let cyan = Style::new().cyan();
-
+    ) -> Result<(String, String)> {
         let service_name = name.unwrap_or_else(|| service_type.to_string());
-        println!("{}", bold.apply_to(format!("==> Provisioning service '{}'...", service_name)));
-
-        // Discover or validate port
         let host_port = net::find_free_port(port, service_type.default_port())?;
         let container_port = service_type.default_port();
-
-        // Ensure Btrfs data subvolume exists
         let volume_path = btrfs::ensure_service_volume(&service_name)?;
 
-        // If custom network requested, ensure it exists or create it
         let resolved_network = if let Some(net_name) = network {
             let normalized = net::normalize_network_name(&net_name);
             let existing_nets = net::list_bridge_networks()?;
             if !existing_nets.iter().any(|n| n.name == normalized) {
-                println!("    Creating bridge network '{}'...", normalized);
                 net::create_bridge_network(&normalized, tag.as_deref(), None)?;
             }
             Some(normalized)
@@ -55,10 +44,6 @@ impl Engine {
         let container_image = service_type.default_image(image.as_deref());
         let container_mount = service_type.default_data_dir();
         let env_vars = service_type.default_env(password.as_deref(), host_port);
-
-        println!("    Selected image: {}", cyan.apply_to(&container_image));
-        println!("    Host port binding: {}", cyan.apply_to(format!("{} -> {}/tcp", host_port, container_port)));
-        println!("    Btrfs data volume: {}", cyan.apply_to(format!("{:?}", volume_path)));
 
         let container_id = podman::run_service_container(RunContainerParams {
             name: &service_name,
@@ -75,6 +60,40 @@ impl Engine {
             tag: tag.as_deref(),
             branch_parent: None,
         })?;
+
+        Ok((service_name, container_id))
+    }
+
+    /// Provision and launch a service from catalog or custom image (CLI with formatted output)
+    #[allow(clippy::too_many_arguments)]
+    pub fn up(
+        service_type: ServiceCatalog,
+        port: Option<u16>,
+        name: Option<String>,
+        password: Option<String>,
+        tag: Option<String>,
+        cpus: Option<String>,
+        memory: Option<String>,
+        network: Option<String>,
+        image: Option<String>,
+    ) -> Result<()> {
+        let bold = Style::new().bold();
+        let green = Style::new().green().bold();
+
+        let s_name = name.clone().unwrap_or_else(|| service_type.to_string());
+        println!("{}", bold.apply_to(format!("==> Provisioning service '{}'...", s_name)));
+
+        let (service_name, container_id) = Self::provision_service(
+            service_type,
+            port,
+            name,
+            password,
+            tag,
+            cpus,
+            memory,
+            network,
+            image,
+        )?;
 
         println!(
             "\n{}",
@@ -188,7 +207,22 @@ impl Engine {
         Ok(())
     }
 
-    /// Destroy container, state tags, AND Btrfs volume subvolume (destructive)
+    /// Destroy container, state tags, AND Btrfs volume subvolume (destructive, headless/silent)
+    pub fn wipe_service_storage(service: &str) -> Result<()> {
+        let _ = podman::stop_service(service);
+        let _ = podman::remove_container(service, true);
+
+        // Wipe Btrfs volumes and snapshots
+        btrfs::wipe_service_storage(service)?;
+
+        // Remove from state store
+        let mut store = StateStore::load().unwrap_or_default();
+        let _ = store.remove_service(service);
+
+        Ok(())
+    }
+
+    /// Destroy container, state tags, AND Btrfs volume subvolume (destructive, CLI interactive)
     pub fn wipe(service: &str, force: bool) -> Result<()> {
         let red = Style::new().red().bold();
 
@@ -205,15 +239,7 @@ impl Engine {
         }
 
         println!("Wiping container and storage for service '{}'...", service);
-        let _ = podman::stop_service(service);
-        let _ = podman::remove_container(service, true);
-
-        // Wipe Btrfs volumes and snapshots
-        btrfs::wipe_service_storage(service)?;
-
-        // Remove from state store
-        let mut store = StateStore::load().unwrap_or_default();
-        let _ = store.remove_service(service);
+        Self::wipe_service_storage(service)?;
 
         println!("{}", red.apply_to(format!("[OK] Service '{}' and all associated Btrfs volumes were wiped.", service)));
         Ok(())
@@ -246,6 +272,103 @@ impl Engine {
         Ok(())
     }
 
+    /// Silent branching of a service volume and launching clone container (used by TUI and CLI)
+    pub fn branch_service(
+        service: &str,
+        suffix: &str,
+        port: Option<u16>,
+        cpus: Option<String>,
+        memory: Option<String>,
+    ) -> Result<(String, String, u16)> {
+        let branch_name = format!("{}_{}", service, suffix);
+
+        // Check parent service details
+        let store = StateStore::load().unwrap_or_default();
+        let parent_state = store.get_service(service).cloned();
+
+        let (catalog, image, default_port, container_mount, env_vars, parent_cpus, parent_mem, network) = match parent_state {
+            Some(s) => {
+                let c_mount = s.catalog.default_data_dir().to_string();
+                let env: Vec<(String, String)> = s.env.into_iter().collect();
+                (s.catalog, s.image, s.container_port, c_mount, env, s.cpus, s.memory, s.network)
+            }
+            None => {
+                let insp = podman::inspect_service(service)?
+                    .context(format!("Parent service '{}' not found in podman or state store", service))?;
+                let c_mount = insp.catalog.default_data_dir().to_string();
+                let env = insp.catalog.default_env(None, insp.container_port);
+                (insp.catalog, insp.image, insp.container_port, c_mount, env, insp.cpus, insp.memory, insp.network)
+            }
+        };
+
+        // Use overridden or inherited resource quotas
+        let effective_cpus = cpus.or(parent_cpus);
+        let effective_memory = memory.or(parent_mem);
+
+        // Branch Btrfs volume
+        let branch_vol = btrfs::branch_service_volume(service, &branch_name)?;
+
+        // Find free port for branch container
+        let branch_port = net::find_free_port(port, default_port + 100)?;
+
+        // Run branch container instance
+        let cid = podman::run_service_container(RunContainerParams {
+            name: &branch_name,
+            catalog,
+            image: &image,
+            host_port: branch_port,
+            container_port: default_port,
+            volume_path: &branch_vol,
+            container_mount: &container_mount,
+            env: &env_vars,
+            cpus: effective_cpus.as_deref(),
+            memory: effective_memory.as_deref(),
+            network: network.as_deref(),
+            tag: Some(&format!("branch_of_{}", service)),
+            branch_parent: Some(service),
+        })?;
+
+        Ok((branch_name, cid, branch_port))
+    }
+
+    /// Silent restore service from snapshot (used by TUI and CLI)
+    pub fn restore_service_snapshot(service: &str, snapshot: &str) -> Result<PathBuf> {
+        let was_running = podman::inspect_service(service)?
+            .map(|s| s.status.to_lowercase().contains("running"))
+            .unwrap_or(false);
+
+        if was_running {
+            let _ = podman::stop_service(service);
+        }
+
+        let restored_path = btrfs::restore_service_snapshot(service, snapshot)?;
+
+        if was_running {
+            let _ = podman::start_service(service);
+        }
+
+        Ok(restored_path)
+    }
+
+    /// Silent merge service branches (used by TUI and CLI)
+    pub fn merge_service_branches(source: &str, target: &str) -> Result<()> {
+        let target_was_running = podman::inspect_service(target)?
+            .map(|s| s.status.to_lowercase().contains("running"))
+            .unwrap_or(false);
+
+        if target_was_running {
+            let _ = podman::stop_service(target);
+        }
+
+        btrfs::merge_service_volumes(source, target)?;
+
+        if target_was_running {
+            let _ = podman::start_service(target);
+        }
+
+        Ok(())
+    }
+
     /// Handle snap subcommands
     pub fn snap(cmd: SnapCommands) -> Result<()> {
         match cmd {
@@ -266,58 +389,13 @@ impl Engine {
                 let branch_name = format!("{}_{}", service, suffix);
                 println!("Branching service '{}' into '{}'...", service, branch_name);
 
-                // Check parent service details
-                let store = StateStore::load().unwrap_or_default();
-                let parent_state = store.get_service(&service).cloned();
-
-                let (catalog, image, default_port, container_mount, env_vars, parent_cpus, parent_mem, network) = match parent_state {
-                    Some(s) => {
-                        let c_mount = s.catalog.default_data_dir().to_string();
-                        let env: Vec<(String, String)> = s.env.into_iter().collect();
-                        (s.catalog, s.image, s.container_port, c_mount, env, s.cpus, s.memory, s.network)
-                    }
-                    None => {
-                        // Inspect container
-                        let insp = podman::inspect_service(&service)?
-                            .context(format!("Parent service '{}' not found in podman or state store", service))?;
-                        let c_mount = insp.catalog.default_data_dir().to_string();
-                        let env = insp.catalog.default_env(None, insp.container_port);
-                        (insp.catalog, insp.image, insp.container_port, c_mount, env, insp.cpus, insp.memory, insp.network)
-                    }
-                };
-
-                // Use overridden or inherited resource quotas
-                let effective_cpus = cpus.or(parent_cpus);
-                let effective_memory = memory.or(parent_mem);
-
-                // Branch Btrfs volume
-                let branch_vol = btrfs::branch_service_volume(&service, &branch_name)?;
-
-                // Find free port for branch container
-                let branch_port = net::find_free_port(port, default_port + 100)?;
-
-                // Run branch container instance
-                let cid = podman::run_service_container(RunContainerParams {
-                    name: &branch_name,
-                    catalog,
-                    image: &image,
-                    host_port: branch_port,
-                    container_port: default_port,
-                    volume_path: &branch_vol,
-                    container_mount: &container_mount,
-                    env: &env_vars,
-                    cpus: effective_cpus.as_deref(),
-                    memory: effective_memory.as_deref(),
-                    network: network.as_deref(),
-                    tag: Some(&format!("branch_of_{}", service)),
-                    branch_parent: Some(&service),
-                })?;
+                let (b_name, cid, branch_port) = Self::branch_service(&service, &suffix, port, cpus, memory)?;
 
                 println!(
                     "{}",
                     green.apply_to(format!(
                         "[OK] Cloned branch '{}' ready on port {}! (ID: {})",
-                        branch_name,
+                        b_name,
                         branch_port,
                         &cid[..12.min(cid.len())]
                     ))
@@ -327,23 +405,7 @@ impl Engine {
                 let green = Style::new().green().bold();
                 println!("Restoring service '{}' from snapshot '{}'...", service, snapshot);
 
-                // Stop service if running
-                let was_running = podman::inspect_service(&service)?
-                    .map(|s| s.status.to_lowercase().contains("running"))
-                    .unwrap_or(false);
-
-                if was_running {
-                    println!("    Stopping service '{}' before restore...", service);
-                    let _ = podman::stop_service(&service);
-                }
-
-                // Restore snapshot
-                let restored_path = btrfs::restore_service_snapshot(&service, &snapshot)?;
-
-                if was_running {
-                    println!("    Restarting service '{}'...", service);
-                    let _ = podman::start_service(&service);
-                }
+                let restored_path = Self::restore_service_snapshot(&service, &snapshot)?;
 
                 println!(
                     "{}",
@@ -354,23 +416,7 @@ impl Engine {
                 let green = Style::new().green().bold();
                 println!("Merging branch service '{}' into target service '{}'...", source, target);
 
-                // Stop target service if running
-                let target_was_running = podman::inspect_service(&target)?
-                    .map(|s| s.status.to_lowercase().contains("running"))
-                    .unwrap_or(false);
-
-                if target_was_running {
-                    println!("    Stopping target service '{}' before merge...", target);
-                    let _ = podman::stop_service(&target);
-                }
-
-                // Execute volume merge
-                btrfs::merge_service_volumes(&source, &target)?;
-
-                if target_was_running {
-                    println!("    Restarting target service '{}'...", target);
-                    let _ = podman::start_service(&target);
-                }
+                Self::merge_service_branches(&source, &target)?;
 
                 println!(
                     "{}",

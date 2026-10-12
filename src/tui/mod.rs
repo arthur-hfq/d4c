@@ -39,8 +39,15 @@ async fn run_loop(
 ) -> Result<()> {
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
+    let mut was_modal = false;
 
     loop {
+        let is_modal = !matches!(app.modal, Modal::None);
+        if was_modal && !is_modal {
+            terminal.clear()?;
+        }
+        was_modal = is_modal;
+
         terminal.draw(|f| ui::draw(f, app))?;
 
         let timeout = tick_rate
@@ -130,7 +137,7 @@ fn handle_tab_specific_keys(app: &mut App, code: KeyCode) {
             KeyCode::Char('s') => {
                 if let Some(svc) = app.selected_service() {
                     let name = svc.name.clone();
-                    let res = crate::engine::Engine::start(&name);
+                    let res = crate::podman::start_service(&name);
                     match res {
                         Ok(_) => app.set_toast(&format!("[OK] Service '{}' started", name), false),
                         Err(e) => app.set_toast(&format!("[ERROR] Start failed: {}", e), true),
@@ -141,7 +148,7 @@ fn handle_tab_specific_keys(app: &mut App, code: KeyCode) {
             KeyCode::Char('x') => {
                 if let Some(svc) = app.selected_service() {
                     let name = svc.name.clone();
-                    let res = crate::engine::Engine::stop(&name);
+                    let res = crate::podman::stop_service(&name);
                     match res {
                         Ok(_) => app.set_toast(&format!("[OK] Service '{}' stopped", name), false),
                         Err(e) => app.set_toast(&format!("[ERROR] Stop failed: {}", e), true),
@@ -204,20 +211,8 @@ fn handle_tab_specific_keys(app: &mut App, code: KeyCode) {
                 app.tab = Tab::Panorama;
                 app.refresh_panorama_logs();
             }
-            KeyCode::Char('a') => app.open_network_attach_modal(),
-            KeyCode::Char('x') => {
-                if let Some(net) = app.selected_network()
-                    && let Some(first_c) = net.containers.first()
-                {
-                    let c_name = first_c.clone();
-                    let n_name = net.name.clone();
-                    app.modal = Modal::ConfirmAction {
-                        title: " Detach Container ".to_string(),
-                        prompt: format!("Disconnect '{}' from network '{}'?", c_name, n_name),
-                        action: PendingAction::DetachNetwork { service: c_name, network: n_name },
-                    };
-                }
-            }
+            KeyCode::Char('a') => app.open_network_attach_container_modal(),
+            KeyCode::Char('x') => app.open_network_detach_container_modal(),
             _ => {}
         },
         Tab::Snapshots => match code {
@@ -441,6 +436,32 @@ fn handle_modal_keys(app: &mut App, code: KeyCode) {
                 }
                 KeyCode::Up | KeyCode::BackTab if !networks.is_empty() => {
                     *network_idx = if *network_idx == 0 { networks.len() - 1 } else { *network_idx - 1 };
+                }
+                _ => {}
+            }
+        }
+        Modal::NetworkAttachContainer { container_idx, containers, .. } => {
+            match code {
+                KeyCode::Esc => app.modal = Modal::None,
+                KeyCode::Enter => app.submit_network_attach_container_modal(),
+                KeyCode::Down | KeyCode::Tab if !containers.is_empty() => {
+                    *container_idx = (*container_idx + 1) % containers.len();
+                }
+                KeyCode::Up | KeyCode::BackTab if !containers.is_empty() => {
+                    *container_idx = if *container_idx == 0 { containers.len() - 1 } else { *container_idx - 1 };
+                }
+                _ => {}
+            }
+        }
+        Modal::NetworkDetachContainer { container_idx, containers, .. } => {
+            match code {
+                KeyCode::Esc => app.modal = Modal::None,
+                KeyCode::Enter => app.submit_network_detach_container_modal(),
+                KeyCode::Down | KeyCode::Tab if !containers.is_empty() => {
+                    *container_idx = (*container_idx + 1) % containers.len();
+                }
+                KeyCode::Up | KeyCode::BackTab if !containers.is_empty() => {
+                    *container_idx = if *container_idx == 0 { containers.len() - 1 } else { *container_idx - 1 };
                 }
                 _ => {}
             }

@@ -498,7 +498,7 @@ fn draw_snapshots_tab(f: &mut Frame, app: &App, area: Rect) {
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Cyan))
                 .title(Span::styled(
-                    format!(" \u{f0c2}{} ({}) ", empty_title, app.snapshots.len()),
+                    format!(" \u{f0c2}  {} ({}) ", empty_title.trim(), app.snapshots.len()),
                     Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                 )),
         );
@@ -510,7 +510,7 @@ fn draw_snapshots_tab(f: &mut Frame, app: &App, area: Rect) {
         let created = snap.created_at.as_deref().unwrap_or("unknown");
         let lines = vec![
             Line::from(vec![
-                Span::styled(" \u{f0c2} Snapshot: ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                Span::styled(" \u{f0c2}  Snapshot: ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
                 Span::styled(&snap.name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             ]),
             Line::from(vec![
@@ -890,6 +890,8 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         };
         let toast_p = Paragraph::new(Span::styled(format!(" {} ", msg), style)).alignment(Alignment::Right);
         f.render_widget(toast_p, chunks[1]);
+    } else {
+        f.render_widget(Paragraph::new(""), chunks[1]);
     }
 }
 
@@ -938,7 +940,8 @@ fn draw_modal(f: &mut Frame, app: &App) {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Cyan))
-                .title(" \u{f126} Branch Service via Btrfs CoW ");
+                .style(Style::default().bg(Color::Rgb(15, 18, 26)))
+                .title(" \u{f126}  Branch Service via Btrfs CoW ");
 
             f.render_widget(Paragraph::new(lines).block(block), area);
         }
@@ -978,7 +981,8 @@ fn draw_modal(f: &mut Frame, app: &App) {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Yellow))
-                .title(" \u{f2db} Tune CPU & Memory Limits ");
+                .style(Style::default().bg(Color::Rgb(15, 18, 26)))
+                .title(" \u{f2db}  Tune CPU & Memory Limits ");
 
             f.render_widget(Paragraph::new(lines).block(block), area);
         }
@@ -1013,6 +1017,7 @@ fn draw_modal(f: &mut Frame, app: &App) {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Cyan))
+                .style(Style::default().bg(Color::Rgb(15, 18, 26)))
                 .title(" Merge Branch into Target Service ");
 
             f.render_widget(Paragraph::new(lines).block(block), area);
@@ -1043,7 +1048,8 @@ fn draw_modal(f: &mut Frame, app: &App) {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Yellow))
-                .title(" \u{f02b} Edit Project Tag ");
+                .style(Style::default().bg(Color::Rgb(15, 18, 26)))
+                .title(" \u{f02b}  Edit Project Tag ");
 
             f.render_widget(Paragraph::new(lines).block(block), area);
         }
@@ -1076,7 +1082,8 @@ fn draw_modal(f: &mut Frame, app: &App) {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Red))
-                .title(" \u{f014} Wipe Service & Subvolume ");
+                .style(Style::default().bg(Color::Rgb(15, 18, 26)))
+                .title(" \u{f014}  Wipe Service & Subvolume ");
 
             f.render_widget(Paragraph::new(lines).block(block), area);
         }
@@ -1110,7 +1117,78 @@ fn draw_modal(f: &mut Frame, app: &App) {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Cyan))
-                .title(" \u{f0e8} Hot-Attach Network ");
+                .style(Style::default().bg(Color::Rgb(15, 18, 26)))
+                .title(" \u{f0e8}  Hot-Attach Network ");
+
+            f.render_widget(Paragraph::new(lines).block(block), area);
+        }
+        Modal::NetworkAttachContainer { network, container_idx, containers } => {
+            let mut lines = vec![
+                Line::from(vec![
+                    Span::raw(" Attach service container to network: "),
+                    Span::styled(network, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(" Select container to connect to this isolated bridge:"),
+                Line::from(" ─────────────────────────────────────────────────────────────"),
+            ];
+
+            for (i, c) in containers.iter().enumerate() {
+                let is_foc = i == *container_idx;
+                let prefix = if is_foc { " ▸ " } else { "   " };
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(Color::Cyan)),
+                    Span::styled(c, if is_foc { Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::White) }),
+                ]));
+            }
+
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled(" [ Enter: Attach Container ] ", Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::raw("   "),
+                Span::styled(" [ Esc: Cancel ] ", Style::default().fg(Color::White).bg(Color::DarkGray)),
+            ]));
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Cyan))
+                .style(Style::default().bg(Color::Rgb(15, 18, 26)))
+                .title(" \u{f0e8}  Attach Container to Network ");
+
+            f.render_widget(Paragraph::new(lines).block(block), area);
+        }
+        Modal::NetworkDetachContainer { network, container_idx, containers } => {
+            let mut lines = vec![
+                Line::from(vec![
+                    Span::raw(" Detach service container from network: "),
+                    Span::styled(network, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(" Select container to disconnect from this bridge:"),
+                Line::from(" ─────────────────────────────────────────────────────────────"),
+            ];
+
+            for (i, c) in containers.iter().enumerate() {
+                let is_foc = i == *container_idx;
+                let prefix = if is_foc { " ▸ " } else { "   " };
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(Color::Cyan)),
+                    Span::styled(c, if is_foc { Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::White) }),
+                ]));
+            }
+
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled(" [ Enter: Detach Container ] ", Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::raw("   "),
+                Span::styled(" [ Esc: Cancel ] ", Style::default().fg(Color::White).bg(Color::DarkGray)),
+            ]));
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Yellow))
+                .style(Style::default().bg(Color::Rgb(15, 18, 26)))
+                .title(" \u{f0e8}  Detach Container from Network ");
 
             f.render_widget(Paragraph::new(lines).block(block), area);
         }
@@ -1147,7 +1225,8 @@ fn draw_modal(f: &mut Frame, app: &App) {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Cyan))
-                .title(" \u{f0e8} Create Bridge Network ");
+                .style(Style::default().bg(Color::Rgb(15, 18, 26)))
+                .title(" \u{f0e8}  Create Bridge Network ");
 
             f.render_widget(Paragraph::new(lines).block(block), area);
         }
@@ -1166,6 +1245,7 @@ fn draw_modal(f: &mut Frame, app: &App) {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Yellow))
+                .style(Style::default().bg(Color::Rgb(15, 18, 26)))
                 .title(title.as_str());
 
             f.render_widget(Paragraph::new(lines).block(block), area);
@@ -1182,6 +1262,7 @@ fn draw_modal(f: &mut Frame, app: &App) {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(style)
+                .style(Style::default().bg(Color::Rgb(15, 18, 26)))
                 .title(title.as_str());
 
             f.render_widget(Paragraph::new(lines).block(block), area);
