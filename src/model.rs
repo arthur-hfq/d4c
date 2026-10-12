@@ -168,6 +168,67 @@ pub struct ServiceInfo {
     pub branch_parent: Option<String>,
 }
 
+impl ServiceInfo {
+    /// Check if the container is currently in running status
+    pub fn is_running(&self) -> bool {
+        let s = self.status.to_lowercase();
+        s.contains("running") || s.starts_with("up")
+    }
+
+    /// Return short 12-char container ID
+    pub fn short_id(&self) -> String {
+        match &self.container_id {
+            Some(id) if id.len() >= 12 => id[..12].to_string(),
+            Some(id) => id.clone(),
+            None => "-".to_string(),
+        }
+    }
+
+    /// Formatted CPU and Memory limits
+    pub fn formatted_limits(&self) -> (String, String) {
+        let cpu = self.cpus.as_deref().unwrap_or("UNLIMITED");
+        let mem = self.memory.as_deref().unwrap_or("UNLIMITED");
+        (cpu.to_string(), mem.to_string())
+    }
+
+    /// Generate connection string URI based on service catalog, credentials, and host port
+    pub fn connection_url(&self) -> String {
+        let port = self.host_port.unwrap_or(self.container_port);
+        let store = StateStore::load().unwrap_or_default();
+        let env = store.get_service(&self.name).map(|s| &s.env);
+
+        match self.catalog {
+            ServiceCatalog::Postgres => {
+                let user = env.and_then(|e| e.get("POSTGRES_USER")).map(|s| s.as_str()).unwrap_or("postgres");
+                let pass = env.and_then(|e| e.get("POSTGRES_PASSWORD")).map(|s| s.as_str()).unwrap_or("postgres");
+                let db = env.and_then(|e| e.get("POSTGRES_DB")).map(|s| s.as_str()).unwrap_or("d4c_db");
+                format!("postgresql://{}:{}@localhost:{}/{}", user, pass, port, db)
+            }
+            ServiceCatalog::Mysql => {
+                let pass = env.and_then(|e| e.get("MYSQL_ROOT_PASSWORD")).map(|s| s.as_str()).unwrap_or("mysql");
+                let db = env.and_then(|e| e.get("MYSQL_DATABASE")).map(|s| s.as_str()).unwrap_or("d4c_db");
+                format!("mysql://root:{}@localhost:{}/{}", pass, port, db)
+            }
+            ServiceCatalog::Mongo => {
+                if let Some(user) = env.and_then(|e| e.get("MONGO_INITDB_ROOT_USERNAME")) {
+                    let pass = env.and_then(|e| e.get("MONGO_INITDB_ROOT_PASSWORD")).map(|s| s.as_str()).unwrap_or("admin");
+                    format!("mongodb://{}:{}@localhost:{}/", user, pass, port)
+                } else {
+                    format!("mongodb://localhost:{}/", port)
+                }
+            }
+            ServiceCatalog::Redis => format!("redis://localhost:{}", port),
+            ServiceCatalog::Kafka => format!("localhost:{}", port),
+            ServiceCatalog::Rabbitmq => {
+                let user = env.and_then(|e| e.get("RABBITMQ_DEFAULT_USER")).map(|s| s.as_str()).unwrap_or("admin");
+                let pass = env.and_then(|e| e.get("RABBITMQ_DEFAULT_PASS")).map(|s| s.as_str()).unwrap_or("admin");
+                format!("amqp://{}:{}@localhost:{}", user, pass, port)
+            }
+            ServiceCatalog::Custom => format!("http://localhost:{}", port),
+        }
+    }
+}
+
 /// Metadata describing a Btrfs volume snapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotInfo {
@@ -190,6 +251,8 @@ pub struct NetworkInfo {
     pub tag: Option<String>,
     pub containers_count: usize,
     pub containers: Vec<String>,
+    #[serde(default)]
+    pub container_ips: HashMap<String, String>,
 }
 
 /// Persistent service state entry stored on disk

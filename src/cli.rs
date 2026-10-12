@@ -14,12 +14,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Launch the QuickShell graphical dashboard (or terminal UI with --tui)
-    Ui {
-        /// Launch in text terminal mode instead of QuickShell
-        #[arg(long)]
-        tui: bool,
-    },
+    /// Launch the interactive terminal UI (TUI) dashboard
+    Ui,
 
     /// Provision and run a preconfigured catalog service or custom image
     Up {
@@ -245,6 +241,10 @@ pub enum NetCommands {
         /// Project or metadata tag
         #[arg(short, long)]
         tag: Option<String>,
+
+        /// Custom subnet CIDR (e.g., '10.89.1.0/24')
+        #[arg(short, long)]
+        subnet: Option<String>,
     },
 
     /// List custom networks with container attachment counts
@@ -269,13 +269,18 @@ pub enum NetCommands {
         network: String,
     },
 
-    /// Hot-detach a service from a network
+    /// Hot-detach a service from a network (or all networks)
     Detach {
         /// Target service container
         service: String,
 
-        /// Network to leave
+        /// Network to leave (leave empty if --all is specified)
+        #[arg(default_value = "")]
         network: String,
+
+        /// Detach from all networks
+        #[arg(long, default_value_t = false)]
+        all: bool,
     },
 
     /// Stream live aggregated and color-coded logs across all containers on a network
@@ -373,7 +378,7 @@ mod tests {
         let args = vec!["d4c", "net", "create", "dev-bridge", "--tag", "network-tag"];
         let cli = Cli::try_parse_from(args).expect("Failed to parse 'd4c net create'");
         match cli.command {
-            Some(Commands::Net(NetCommands::Create { name, tag })) => {
+            Some(Commands::Net(NetCommands::Create { name, tag, .. })) => {
                 assert_eq!(name, "dev-bridge");
                 assert_eq!(tag, Some("network-tag".to_string()));
             }

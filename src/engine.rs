@@ -8,7 +8,6 @@ use console::Style;
 use dialoguer::{Confirm, Input, Select};
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
 pub struct Engine;
 
@@ -46,7 +45,7 @@ impl Engine {
             let existing_nets = net::list_bridge_networks()?;
             if !existing_nets.iter().any(|n| n.name == normalized) {
                 println!("    Creating bridge network '{}'...", normalized);
-                net::create_bridge_network(&normalized, tag.as_deref())?;
+                net::create_bridge_network(&normalized, tag.as_deref(), None)?;
             }
             Some(normalized)
         } else {
@@ -436,10 +435,10 @@ impl Engine {
     /// Handle net subcommands
     pub async fn net(cmd: NetCommands) -> Result<()> {
         match cmd {
-            NetCommands::Create { name, tag } => {
+            NetCommands::Create { name, tag, subnet } => {
                 let green = Style::new().green().bold();
                 println!("Creating bridge network '{}'...", name);
-                let created_name = net::create_bridge_network(&name, tag.as_deref())?;
+                let created_name = net::create_bridge_network(&name, tag.as_deref(), subnet.as_deref())?;
                 println!("{}", green.apply_to(format!("[OK] Bridge network '{}' created.", created_name)));
             }
             NetCommands::List { json } => {
@@ -497,11 +496,17 @@ impl Engine {
                 net::attach_container(&service, &network)?;
                 println!("{}", green.apply_to(format!("[OK] Container '{}' attached to '{}'.", service, network)));
             }
-            NetCommands::Detach { service, network } => {
+            NetCommands::Detach { service, network, all } => {
                 let yellow = Style::new().yellow().bold();
-                println!("Detaching container '{}' from network '{}'...", service, network);
-                net::detach_container(&service, &network)?;
-                println!("{}", yellow.apply_to(format!("[OK] Container '{}' detached from '{}'.", service, network)));
+                if all || network.is_empty() {
+                    println!("Detaching container '{}' from all networks...", service);
+                    net::disconnect_all_networks(&service)?;
+                    println!("{}", yellow.apply_to(format!("[OK] Container '{}' detached from all networks.", service)));
+                } else {
+                    println!("Detaching container '{}' from network '{}'...", service, network);
+                    net::detach_container(&service, &network)?;
+                    println!("{}", yellow.apply_to(format!("[OK] Container '{}' detached from '{}'.", service, network)));
+                }
             }
             NetCommands::Panorama { network } => {
                 net::panorama_logs(&network).await?;
@@ -664,50 +669,9 @@ impl Engine {
         Ok(())
     }
 
-    /// Launch UI: Quickshell graphical window by default, or terminal dashboard if --tui
-    pub async fn ui(tui: bool) -> Result<()> {
-        if !tui {
-            // Find quickshell path
-            let qs_locations = [
-                PathBuf::from("./quickshell/shell.qml"),
-                dirs_or_env_var().unwrap_or_default().join("d4c").join("quickshell").join("shell.qml"),
-                PathBuf::from("/home/mepper/Projects/d4c/quickshell/shell.qml"),
-            ];
-
-            let found_qml = qs_locations.iter().find(|p| p.exists());
-
-            if let Some(qml_path) = found_qml {
-                let which_qs = Command::new("which").arg("quickshell").output();
-                let has_quickshell = which_qs.is_ok_and(|out| out.status.success());
-
-                if has_quickshell {
-                    println!("[INFO] Launching QuickShell dashboard ({:?})...", qml_path);
-                    let mut cmd = Command::new("quickshell");
-                    if let Ok(exe) = std::env::current_exe() {
-                        cmd.env("D4C_BIN", exe);
-                    }
-                    let status = cmd
-                        .args(["-p", &qml_path.to_string_lossy()])
-                        .status();
-
-                    match status {
-                        Ok(s) if s.success() => return Ok(()),
-                        Ok(_) => {
-                            eprintln!("[WARN] QuickShell exited with non-zero status. Falling back to terminal mode.");
-                        }
-                        Err(e) => {
-                            eprintln!("[WARN] Failed to spawn QuickShell: {}. Falling back to terminal mode.", e);
-                        }
-                    }
-                } else {
-                    eprintln!("[WARN] 'quickshell' binary not found on PATH. Falling back to terminal mode.");
-                }
-            } else {
-                eprintln!("[WARN] quickshell/shell.qml not found. Falling back to terminal mode.");
-            }
-        }
-
-        Self::tui().await
+    /// Launch the interactive terminal UI (TUI) dashboard
+    pub async fn ui() -> Result<()> {
+        crate::tui::run().await
     }
 
     /// Clean text-only terminal UI dashboard
@@ -976,13 +940,5 @@ impl Engine {
         }
 
         Ok(())
-    }
-}
-
-fn dirs_or_env_var() -> Option<PathBuf> {
-    if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME") {
-        Some(PathBuf::from(xdg_data))
-    } else {
-        std::env::var("HOME").ok().map(|home| PathBuf::from(home).join(".local").join("share"))
     }
 }

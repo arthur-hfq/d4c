@@ -14,8 +14,8 @@ async fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        None => Engine::ui(false).await,
-        Some(Commands::Ui { tui }) => Engine::ui(tui).await,
+        None => Engine::ui().await,
+        Some(Commands::Ui) => Engine::ui().await,
         Some(Commands::Up {
             service_type,
             port,

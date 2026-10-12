@@ -22,3 +22,5 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ratatui = "0.30.2"
+crossterm = "0.29.0"

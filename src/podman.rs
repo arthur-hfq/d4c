@@ -484,3 +484,54 @@ fn parse_inspect_json(val: &Value, state_opt: Option<&ServiceState>) -> ServiceI
         branch_parent,
     }
 }
+
+/// Retrieve the most recent log lines of a container
+pub fn get_recent_logs(name: &str, tail: usize) -> Vec<String> {
+    let output = Command::new("podman")
+        .args(["logs", "--tail", &tail.to_string(), name])
+        .output();
+
+    if let Ok(out) = output {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let mut lines: Vec<String> = stdout
+            .lines()
+            .chain(stderr.lines())
+            .map(|s| s.to_string())
+            .collect();
+        if lines.len() > tail {
+            lines = lines.split_off(lines.len() - tail);
+        }
+        lines
+    } else {
+        Vec::new()
+    }
+}
+
+/// Retrieve assigned IP addresses for each attached network of a container
+pub fn get_container_network_ips(name: &str) -> Vec<(String, String)> {
+    let output = Command::new("podman")
+        .args(["inspect", name, "--format", "json"])
+        .output();
+
+    let mut result = Vec::new();
+    if let Ok(out) = output
+        && out.status.success()
+    {
+        let val: Vec<Value> = serde_json::from_slice(&out.stdout).unwrap_or_default();
+        if let Some(first) = val.first()
+            && let Some(nets) = first
+                .get("NetworkSettings")
+                .and_then(|n| n.get("Networks"))
+                .and_then(|n| n.as_object())
+        {
+            for (net_name, conf) in nets {
+                let ip = conf.get("IPAddress").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if !ip.is_empty() {
+                    result.push((net_name.clone(), ip));
+                }
+            }
+        }
+    }
+    result
+}

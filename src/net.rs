@@ -51,7 +51,7 @@ pub fn normalize_network_name(name: &str) -> String {
 }
 
 /// Creates a new isolated bridge network in Podman with d4c metadata labels
-pub fn create_bridge_network(name: &str, tag: Option<&str>) -> Result<String> {
+pub fn create_bridge_network(name: &str, tag: Option<&str>, subnet: Option<&str>) -> Result<String> {
     let net_name = normalize_network_name(name);
 
     let mut cmd = Command::new("podman");
@@ -60,6 +60,10 @@ pub fn create_bridge_network(name: &str, tag: Option<&str>) -> Result<String> {
 
     if let Some(t) = tag {
         cmd.args(["--label", &format!("d4c.tag={}", t)]);
+    }
+
+    if let Some(s) = subnet {
+        cmd.args(["--subnet", s]);
     }
 
     cmd.arg(&net_name);
@@ -145,12 +149,23 @@ pub fn list_bridge_networks() -> Result<Vec<NetworkInfo>> {
             .args(["ps", "-a", "--filter", &format!("network={}", name), "--format", "{{.Names}}"])
             .output();
 
+        let mut container_ips = std::collections::HashMap::new();
         if let Ok(ps_out) = ps_output {
             let names_str = String::from_utf8_lossy(&ps_out.stdout);
             for line in names_str.lines() {
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
                     containers.push(trimmed.to_string());
+                    // Inspect IP for this container on this network
+                    let c_insp = Command::new("podman")
+                        .args(["inspect", trimmed, "--format", &format!("{{{{.NetworkSettings.Networks.{}.IPAddress}}}}", name)])
+                        .output();
+                    if let Ok(c_out) = c_insp {
+                        let ip = String::from_utf8_lossy(&c_out.stdout).trim().to_string();
+                        if !ip.is_empty() && ip != "<no value>" {
+                            container_ips.insert(trimmed.to_string(), ip);
+                        }
+                    }
                 }
             }
         }
@@ -170,6 +185,7 @@ pub fn list_bridge_networks() -> Result<Vec<NetworkInfo>> {
             tag,
             containers_count: count,
             containers,
+            container_ips,
         });
     }
 
@@ -324,6 +340,44 @@ pub async fn panorama_logs(network: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Disconnects a container from all networks it is currently attached to
+pub fn disconnect_all_networks(service: &str) -> Result<()> {
+    let output = Command::new("podman")
+        .args(["inspect", service, "--format", "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}} {{end}}"])
+        .output();
+
+    if let Ok(out) = output {
+        let nets_str = String::from_utf8_lossy(&out.stdout);
+        for net in nets_str.split_whitespace() {
+            let _ = detach_container(service, net);
+        }
+    }
+    Ok(())
+}
+
+/// Fetches recent logs from all containers on a given network for in-TUI panorama rendering
+pub fn get_network_recent_logs(network: &str, tail: usize) -> Vec<(String, String)> {
+    let net_name = normalize_network_name(network);
+    let ps_output = Command::new("podman")
+        .args(["ps", "--filter", &format!("network={}", net_name), "--format", "{{.Names}}"])
+        .output();
+
+    let mut all_logs = Vec::new();
+    if let Ok(ps_out) = ps_output {
+        let names_str = String::from_utf8_lossy(&ps_out.stdout);
+        for line in names_str.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                let logs = crate::podman::get_recent_logs(trimmed, tail);
+                for l in logs {
+                    all_logs.push((trimmed.to_string(), l));
+                }
+            }
+        }
+    }
+    all_logs
 }
 
 

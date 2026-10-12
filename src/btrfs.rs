@@ -239,6 +239,72 @@ pub fn list_service_snapshots(service: &str) -> Result<Vec<SnapshotInfo>> {
     Ok(snapshots)
 }
 
+/// Lists all snapshots across all managed services
+pub fn list_all_snapshots() -> Result<Vec<SnapshotInfo>> {
+    let base_dir = get_volumes_dir()?;
+    let mut snapshots = Vec::new();
+
+    if !base_dir.exists() {
+        return Ok(snapshots);
+    }
+
+    for entry in fs::read_dir(&base_dir)? {
+        let entry = entry?;
+        let file_name = entry.file_name().to_string_lossy().to_string();
+
+        if file_name.starts_with("d4c_vol_") && file_name.contains("_snap_") {
+            let without_prefix = file_name.trim_start_matches("d4c_vol_");
+            let parts: Vec<&str> = without_prefix.splitn(2, "_snap_").collect();
+            if parts.len() == 2 {
+                let service = parts[0].to_string();
+                let snap_tag = parts[1].to_string();
+                let path = entry.path();
+                let metadata = entry.metadata()?;
+
+                let created_at = metadata
+                    .created()
+                    .or_else(|_| metadata.modified())
+                    .ok()
+                    .map(|t| {
+                        let dt: DateTime<Utc> = t.into();
+                        dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+                    });
+
+                let readonly = check_is_readonly(&path);
+                let size_bytes = calculate_dir_size(&path);
+
+                snapshots.push(SnapshotInfo {
+                    name: file_name,
+                    service,
+                    tag: snap_tag,
+                    path,
+                    readonly,
+                    size_bytes,
+                    created_at,
+                });
+            }
+        }
+    }
+
+    snapshots.sort_by(|a, b| b.name.cmp(&a.name));
+    Ok(snapshots)
+}
+
+/// Deletes a specific snapshot subvolume
+pub fn delete_snapshot(service: &str, tag: &str) -> Result<()> {
+    let base_dir = get_volumes_dir()?;
+    let path = if tag.starts_with("d4c_vol_") {
+        base_dir.join(tag)
+    } else {
+        base_dir.join(format!("d4c_vol_{}_snap_{}", service, tag))
+    };
+
+    if path.exists() {
+        delete_subvolume_or_dir(&path)?;
+    }
+    Ok(())
+}
+
 /// Restores a service volume to a previous snapshot
 pub fn restore_service_snapshot(service: &str, snapshot_tag: &str) -> Result<PathBuf> {
     let base_dir = get_volumes_dir()?;
