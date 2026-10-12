@@ -262,7 +262,7 @@ impl Engine {
                     ))
                 );
             }
-            SnapCommands::Branch { service, suffix, port } => {
+            SnapCommands::Branch { service, suffix, port, cpus, memory } => {
                 let green = Style::new().green().bold();
                 let branch_name = format!("{}_{}", service, suffix);
                 println!("Branching service '{}' into '{}'...", service, branch_name);
@@ -271,7 +271,7 @@ impl Engine {
                 let store = StateStore::load().unwrap_or_default();
                 let parent_state = store.get_service(&service).cloned();
 
-                let (catalog, image, default_port, container_mount, env_vars, cpus, memory, network) = match parent_state {
+                let (catalog, image, default_port, container_mount, env_vars, parent_cpus, parent_mem, network) = match parent_state {
                     Some(s) => {
                         let c_mount = s.catalog.default_data_dir().to_string();
                         let env: Vec<(String, String)> = s.env.into_iter().collect();
@@ -286,6 +286,10 @@ impl Engine {
                         (insp.catalog, insp.image, insp.container_port, c_mount, env, insp.cpus, insp.memory, insp.network)
                     }
                 };
+
+                // Use overridden or inherited resource quotas
+                let effective_cpus = cpus.or(parent_cpus);
+                let effective_memory = memory.or(parent_mem);
 
                 // Branch Btrfs volume
                 let branch_vol = btrfs::branch_service_volume(&service, &branch_name)?;
@@ -303,8 +307,8 @@ impl Engine {
                     volume_path: &branch_vol,
                     container_mount: &container_mount,
                     env: &env_vars,
-                    cpus: cpus.as_deref(),
-                    memory: memory.as_deref(),
+                    cpus: effective_cpus.as_deref(),
+                    memory: effective_memory.as_deref(),
                     network: network.as_deref(),
                     tag: Some(&format!("branch_of_{}", service)),
                     branch_parent: Some(&service),
@@ -828,6 +832,8 @@ impl Engine {
                         service: names[idx].clone(),
                         suffix,
                         port: None,
+                        cpus: None,
+                        memory: None,
                     })?;
                 }
                 5 => {

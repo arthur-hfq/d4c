@@ -185,6 +185,14 @@ pub enum SnapCommands {
         /// Dedicated host port for the branch container
         #[arg(short, long)]
         port: Option<u16>,
+
+        /// CPU limit quota (e.g., '1.0', '0.5')
+        #[arg(long)]
+        cpus: Option<String>,
+
+        /// Memory allocation quota (e.g., '512m', '1g')
+        #[arg(long)]
+        memory: Option<String>,
     },
 
     /// Create an atomic snapshot and export it as a compressed archive (.tar.gz)
@@ -328,7 +336,7 @@ mod tests {
         let branch_args = vec!["d4c", "snap", "branch", "my-pg", "test-branch", "--port", "5435"];
         let branch_cli = Cli::try_parse_from(branch_args).expect("Failed to parse 'd4c snap branch'");
         match branch_cli.command {
-            Some(Commands::Snap(SnapCommands::Branch { service, suffix, port })) => {
+            Some(Commands::Snap(SnapCommands::Branch { service, suffix, port, .. })) => {
                 assert_eq!(service, "my-pg");
                 assert_eq!(suffix, "test-branch");
                 assert_eq!(port, Some(5435));
