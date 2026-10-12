@@ -198,7 +198,7 @@ pub fn list_services() -> Result<Vec<ServiceInfo>> {
         let raw_list: Vec<Value> = serde_json::from_slice(&output.stdout).unwrap_or_default();
 
         for item in raw_list {
-            let mut name = item.get("Names")
+            let name = item.get("Names")
                 .and_then(|v| {
                     if let Some(arr) = v.as_array() {
                         arr.first().and_then(|s| s.as_str())

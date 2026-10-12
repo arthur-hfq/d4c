@@ -7,11 +7,12 @@ use std::process::{Command, Stdio};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 
-/// Checks if a TCP port is currently available on both 0.0.0.0 and 127.0.0.1
+/// Checks if a TCP port is currently available
 pub fn is_port_free(port: u16) -> bool {
-    let bind_all = TcpListener::bind(("0.0.0.0", port));
-    let bind_local = TcpListener::bind(("127.0.0.1", port));
-    bind_all.is_ok() && bind_local.is_ok()
+    if TcpListener::bind(("0.0.0.0", port)).is_err() {
+        return false;
+    }
+    TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
 /// Automatically finds an available host TCP port starting from the default catalog port
@@ -324,4 +325,23 @@ pub async fn panorama_logs(network: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_network_name() {
+        assert_eq!(normalize_network_name("backend"), "d4c_net_backend");
+        assert_eq!(normalize_network_name("d4c_net_backend"), "d4c_net_backend");
+    }
+
+    #[test]
+    fn test_find_free_port() {
+        let free_port = find_free_port(None, 49152).expect("Should find a free ephemeral port");
+        assert!(free_port >= 49152);
+        assert!(is_port_free(free_port));
+    }
 }

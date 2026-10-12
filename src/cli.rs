@@ -2,7 +2,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "d4c", version)]
+#[command(
+    name = "d4c",
+    version,
+    about = "Minimalist local infrastructure orchestrator for Podman containers with atomic Btrfs snapshots"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -279,6 +283,77 @@ impl std::fmt::Display for ServiceCatalog {
             ServiceCatalog::Kafka => write!(f, "kafka"),
             ServiceCatalog::Rabbitmq => write!(f, "rabbitmq"),
             ServiceCatalog::Custom => write!(f, "custom"),
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cli_parse_up() {
+        let args = vec!["d4c", "up", "postgres", "-p", "5433", "--name", "my-pg", "--tag", "prod"];
+        let cli = Cli::try_parse_from(args).expect("Failed to parse 'd4c up'");
+        match cli.command {
+            Some(Commands::Up { service_type, port, name, tag, .. }) => {
+                assert_eq!(service_type, ServiceCatalog::Postgres);
+                assert_eq!(port, Some(5433));
+                assert_eq!(name, Some("my-pg".to_string()));
+                assert_eq!(tag, Some("prod".to_string()));
+            }
+            _ => panic!("Expected Commands::Up"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_snap_branch_and_merge() {
+        let branch_args = vec!["d4c", "snap", "branch", "my-pg", "test-branch", "--port", "5435"];
+        let branch_cli = Cli::try_parse_from(branch_args).expect("Failed to parse 'd4c snap branch'");
+        match branch_cli.command {
+            Some(Commands::Snap(SnapCommands::Branch { service, suffix, port })) => {
+                assert_eq!(service, "my-pg");
+                assert_eq!(suffix, "test-branch");
+                assert_eq!(port, Some(5435));
+            }
+            _ => panic!("Expected SnapCommands::Branch"),
+        }
+
+        let merge_args = vec!["d4c", "snap", "merge", "my-pg_test-branch", "my-pg"];
+        let merge_cli = Cli::try_parse_from(merge_args).expect("Failed to parse 'd4c snap merge'");
+        match merge_cli.command {
+            Some(Commands::Snap(SnapCommands::Merge { source, target })) => {
+                assert_eq!(source, "my-pg_test-branch");
+                assert_eq!(target, "my-pg");
+            }
+            _ => panic!("Expected SnapCommands::Merge"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_snap_restore() {
+        let args = vec!["d4c", "snap", "restore", "my-pg", "-s", "snap_1234"];
+        let cli = Cli::try_parse_from(args).expect("Failed to parse 'd4c snap restore'");
+        match cli.command {
+            Some(Commands::Snap(SnapCommands::Restore { service, snapshot })) => {
+                assert_eq!(service, "my-pg");
+                assert_eq!(snapshot, "snap_1234");
+            }
+            _ => panic!("Expected SnapCommands::Restore"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_net() {
+        let args = vec!["d4c", "net", "create", "dev-bridge", "--tag", "network-tag"];
+        let cli = Cli::try_parse_from(args).expect("Failed to parse 'd4c net create'");
+        match cli.command {
+            Some(Commands::Net(NetCommands::Create { name, tag })) => {
+                assert_eq!(name, "dev-bridge");
+                assert_eq!(tag, Some("network-tag".to_string()));
+            }
+            _ => panic!("Expected NetCommands::Create"),
         }
     }
 }

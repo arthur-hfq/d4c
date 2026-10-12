@@ -388,28 +388,51 @@ pub fn delete_subvolume_or_dir(path: &Path) -> Result<()> {
         .args(["property", "set", "-ts"])
         .arg(path)
         .args(["ro", "false"])
-        .status();
+        .output();
 
-    // Try btrfs subvolume delete
+    // Clean contents inside the directory first so empty subvolume can be deleted by unprivileged user
+    let _ = clean_dir_contents(path);
+
+    // Try btrfs subvolume delete (capture output to suppress non-root permission warnings)
     let btrfs_del = Command::new("btrfs")
         .args(["subvolume", "delete"])
         .arg(path)
-        .status();
+        .output();
 
-    match btrfs_del {
-        Ok(s) if s.success() => Ok(()),
-        _ => {
-            // Fallback: standard recursive removal
-            if path.is_dir() {
-                fs::remove_dir_all(path).with_context(|| {
-                    format!("Failed to remove directory at {:?}", path)
-                })?;
-            } else {
-                fs::remove_file(path)?;
-            }
-            Ok(())
+    if let Ok(out) = btrfs_del {
+        if out.status.success() {
+            return Ok(());
         }
     }
+
+    // Fallback: standard directory removal
+    if path.is_dir() {
+        if fs::remove_dir(path).is_ok() {
+            return Ok(());
+        }
+        let _ = fs::remove_dir_all(path);
+    } else {
+        let _ = fs::remove_file(path);
+    }
+
+    Ok(())
+}
+
+fn clean_dir_contents(path: &Path) -> Result<()> {
+    if !path.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let child_path = entry.path();
+        if child_path.is_dir() {
+            let _ = clean_dir_contents(&child_path);
+            let _ = delete_subvolume_or_dir(&child_path);
+        } else {
+            let _ = fs::remove_file(&child_path);
+        }
+    }
+    Ok(())
 }
 
 fn check_is_readonly(path: &Path) -> bool {
@@ -475,4 +498,71 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_service_volume_path() {
+        let path = get_service_volume_path("test-service").expect("Failed to get service volume path");
+        assert!(path.to_string_lossy().ends_with("d4c_vol_test-service_data"));
+    }
+
+    #[test]
+    fn test_volume_lifecycle() {
+        let test_svc = format!("test_unit_{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros());
+
+        // 1. Ensure volume
+        let vol = ensure_service_volume(&test_svc).expect("Failed to ensure service volume");
+        assert!(vol.exists());
+
+        // Write a test file into volume
+        let test_file = vol.join("hello.txt");
+        fs::write(&test_file, "initial data").expect("Failed to write test file");
+
+        // 2. Create snapshot
+        let snap = create_service_snapshot(&test_svc, Some("v1"), false).expect("Failed to create snapshot");
+        assert!(snap.exists());
+        assert!(snap.join("hello.txt").exists());
+
+        // 3. List snapshots
+        let list = list_service_snapshots(&test_svc).expect("Failed to list snapshots");
+        assert!(list.iter().any(|s| s.tag == "v1"));
+
+        // 4. Branch volume
+        let branch_svc = format!("{}_branch", test_svc);
+        let branch_vol = branch_service_volume(&test_svc, &branch_svc).expect("Failed to branch volume");
+        assert!(branch_vol.exists());
+        assert_eq!(fs::read_to_string(branch_vol.join("hello.txt")).unwrap(), "initial data");
+
+        // Mutate branch volume
+        fs::write(branch_vol.join("hello.txt"), "branched data").unwrap();
+        fs::write(branch_vol.join("branch_only.txt"), "new file").unwrap();
+
+        // 5. Merge branch into target
+        merge_service_volumes(&branch_svc, &test_svc).expect("Failed to merge volumes");
+        assert_eq!(fs::read_to_string(vol.join("hello.txt")).unwrap(), "branched data");
+        assert!(vol.join("branch_only.txt").exists());
+
+        // 6. Restore from original v1 snapshot
+        restore_service_snapshot(&test_svc, "v1").expect("Failed to restore snapshot");
+        assert_eq!(fs::read_to_string(vol.join("hello.txt")).unwrap(), "initial data");
+
+        // 7. Export snapshot to tarball
+        let temp_dir = std::env::temp_dir().join(format!("d4c_test_export_{}", test_svc));
+        fs::create_dir_all(&temp_dir).expect("Failed to create tempdir");
+        let exported = export_service_snapshot(&test_svc, Some(&temp_dir)).expect("Failed to export snapshot");
+        assert!(exported.exists());
+        assert!(exported.to_string_lossy().ends_with(".tar.gz"));
+        let _ = fs::remove_dir_all(&temp_dir);
+
+        // 8. Wipe service storage
+        wipe_service_storage(&test_svc).expect("Failed to wipe test service");
+        wipe_service_storage(&branch_svc).expect("Failed to wipe branch service");
+        assert!(!vol.exists());
+        assert!(!branch_vol.exists());
+    }
 }

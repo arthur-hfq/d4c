@@ -282,3 +282,71 @@ impl StateStore {
         self.save()
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_service_catalog_defaults() {
+        assert_eq!(ServiceCatalog::Postgres.default_port(), 5432);
+        assert_eq!(ServiceCatalog::Mysql.default_port(), 3306);
+        assert_eq!(ServiceCatalog::Mongo.default_port(), 27017);
+        assert_eq!(ServiceCatalog::Redis.default_port(), 6379);
+        assert_eq!(ServiceCatalog::Kafka.default_port(), 9092);
+        assert_eq!(ServiceCatalog::Rabbitmq.default_port(), 5672);
+        assert_eq!(ServiceCatalog::Custom.default_port(), 8080);
+
+        assert_eq!(ServiceCatalog::Postgres.default_data_dir(), "/var/lib/postgresql/data");
+        assert_eq!(ServiceCatalog::Mysql.default_data_dir(), "/var/lib/mysql");
+        assert_eq!(ServiceCatalog::Mongo.default_data_dir(), "/data/db");
+        assert_eq!(ServiceCatalog::Redis.default_data_dir(), "/data");
+    }
+
+    #[test]
+    fn test_parse_loose() {
+        assert_eq!(ServiceCatalog::parse_loose("postgres"), Some(ServiceCatalog::Postgres));
+        assert_eq!(ServiceCatalog::parse_loose("PGSQL"), Some(ServiceCatalog::Postgres));
+        assert_eq!(ServiceCatalog::parse_loose("mariadb"), Some(ServiceCatalog::Mysql));
+        assert_eq!(ServiceCatalog::parse_loose("valkey"), Some(ServiceCatalog::Redis));
+        assert_eq!(ServiceCatalog::parse_loose("unknown_svc"), None);
+    }
+
+    #[test]
+    fn test_service_catalog_env() {
+        let pg_env = ServiceCatalog::Postgres.default_env(Some("secret123"), 5432);
+        assert!(pg_env.iter().any(|(k, v)| k == "POSTGRES_PASSWORD" && v == "secret123"));
+
+        let kafka_env = ServiceCatalog::Kafka.default_env(None, 9092);
+        assert!(kafka_env.iter().any(|(k, v)| k == "KAFKA_NODE_ID" && v == "1"));
+        assert!(kafka_env.iter().any(|(k, v)| k == "KAFKA_ADVERTISED_LISTENERS" && v == "PLAINTEXT://localhost:9092"));
+    }
+
+    #[test]
+    fn test_state_store_serialization() {
+        let mut store = StateStore::default();
+        let svc = ServiceState {
+            name: "test-db".to_string(),
+            catalog: ServiceCatalog::Postgres,
+            image: "postgres:16-alpine".to_string(),
+            host_port: 5432,
+            container_port: 5432,
+            tag: Some("dev".to_string()),
+            volume_path: PathBuf::from("/tmp/d4c_vol_test"),
+            network: None,
+            cpus: Some("1.0".to_string()),
+            memory: Some("512m".to_string()),
+            branch_parent: None,
+            created_at: "2026-10-12 12:00:00 UTC".to_string(),
+            env: HashMap::new(),
+        };
+
+        store.services.insert("test-db".to_string(), svc);
+        let serialized = serde_json::to_string(&store).expect("Failed to serialize");
+        let deserialized: StateStore = serde_json::from_str(&serialized).expect("Failed to deserialize");
+
+        assert!(deserialized.services.contains_key("test-db"));
+        assert_eq!(deserialized.services["test-db"].catalog, ServiceCatalog::Postgres);
+    }
+}
