@@ -1,33 +1,38 @@
-# d4c (Dirty Deeds Done Dirt Cheap)
+# d4c
 
-A minimalist local infrastructure orchestrator in Rust designed to manage **Podman** containerized services and create atomic state branches using **Btrfs Copy-on-Write (CoW)** snapshots, with a fluid, full-screen **Ratatui TUI** rendered via Font Awesome icons.
+A minimalist local infrastructure orchestrator in Rust designed to manage **Podman** containerized services and create atomic state branches using **Btrfs Copy-on-Write (CoW)** snapshots, featuring a fluid full-screen **Ratatui TUI** styled with Font Awesome icons.
 
-`d4c` combines high-performance container orchestration with instant file system state branching:
-- **d4c Engine**: Pure container orchestration, Btrfs subvolumes, atomic branching, merging, and networking.
-- **Interactive TUI Dashboard**: Fluid full-screen terminal interface with two-pane inspector, real-time live logs, network topology visualizer, and keyboard shortcuts.
+`d4c` bridges local container orchestration with filesystem-level state branching:
+- **d4c Engine**: Pure Rust container orchestration, Btrfs subvolumes, atomic branching, safe merging, and bridge networking.
+- **Interactive TUI Dashboard**: Fluid full-screen terminal interface with two-pane inspector, multi-tab navigation, live logs, network topology visualizer, and hotkey workflows.
 
 ---
 
 ## Key Features
 
-- **Fluid Terminal UI (TUI)**: Full-screen interactive dashboard built with Ratatui and Crossterm. Seamless keyboard navigation (`1..7`, `Tab`, `j`/`k`, arrows), live service metrics, connection URI helpers, and popup modals.
+- **Fluid Terminal UI (TUI)**: Full-screen interactive dashboard built with Ratatui and Crossterm. Fluid keyboard navigation (`1..7`, `Tab`, `j`/`k`, arrow keys), live container metrics, connection URI helpers, and interactive modals.
 - **Font Awesome Glyph Styling**: Clean vector glyphs for containers, networks, metrics, and actions with zero emojis.
-- **Atomic State Branching & Merging**: Instant Copy-on-Write snapshots of container storage volumes powered by Btrfs subvolumes. Branch a database in milliseconds without duplicating disk space, and safely merge changes back with automatic pre-merge backups.
-- **Rootless Podman Support**: Automatically leverages rootless container user namespaces (`podman unshare`) to manage database subvolumes with container-mapped UIDs safely.
-- **Automatic Port Discovery**: Automatically scans and binds free TCP host ports or checks requested port availability.
+- **Atomic State Branching & Merging**: Instant Copy-on-Write snapshots of container storage volumes powered by Btrfs subvolumes. Branch a database in milliseconds without duplicating disk space, and safely merge changes back with automatic pre-merge safety backups.
+- **Rootless Podman Support**: Automatically leverages rootless container user namespaces (`podman unshare`) to manage database subvolumes with container-mapped UIDs safely (e.g., PostgreSQL UID 70 / subuid 100069).
+- **Auto-Provisioned Visible Private Bridges**: Services created without an explicit network automatically receive a dedicated, isolated bridge network (`d4c_net_private_<service>`) tagged as `private`. These networks are fully visible and manageable in both the Networks and Panorama tabs.
+- **Safe Network Migration & Container Protection**: When removing a bridge network, d4c automatically disconnects any attached containers first, preventing container removal or network-in-use errors.
+- **Automatic Free Port Discovery**: Scans and binds the next free TCP host port or validates requested port availability automatically.
 - **Curated Service Catalog**: Zero-config provisioning for `postgres`, `mysql`, `mongo`, `redis`, `kafka` (KRaft mode), `rabbitmq`, or arbitrary `custom` OCI images.
-- **Advanced Bridge Networking**: Create custom Podman networks with custom subnet CIDRs, inspect attached containers and their assigned IP addresses, hot attach/detach containers (including detach from all), and stream multi-container aggregated logs with Panorama.
-- **Live Resource Limits**: Configure `--cpus` and `--memory` limits upon creation or branching, and tune them live on running containers via `d4c update`.
+- **Live Resource Limits**: Configure `--cpus` and `--memory` limits upon creation or branching, and adjust them live on running containers via `d4c update` or the `[u]` modal in the TUI.
 - **JSON API Output**: Machine-readable JSON output via `--json` flags for `ps`, `snap list`, and `net list`.
 - **Snapshot Export & Compose Generation**: Export atomic volume snapshots to compressed `.tar.gz` archives, or generate standard `docker-compose.yml` files (in `host` bind or `portable` named volume modes).
 
 ---
 
-## Quick Start
+## Prerequisites
 
-### Installation
+1. **Linux OS** with a **Btrfs** filesystem mounted at `~/.local/share/` (or your chosen storage path).
+2. **Podman** (rootless or root).
+3. A terminal font supporting **Font Awesome** glyphs (e.g., Nerd Fonts).
 
-Ensure Rust, Podman, and Font Awesome are installed:
+---
+
+## Installation
 
 ```bash
 # Clone the repository
@@ -41,11 +46,17 @@ cargo build --release
 ./target/release/d4c --help
 ```
 
+Optionally install `d4c` to your local path:
+
+```bash
+install -Dm755 target/release/d4c ~/.local/bin/d4c
+```
+
 ---
 
 ## Interactive TUI Dashboard
 
-To launch the full-screen interactive TUI dashboard:
+Launch the full-screen interactive TUI dashboard:
 
 ```bash
 # Launch TUI dashboard (running d4c without arguments or with 'ui')
@@ -54,45 +65,52 @@ d4c
 d4c ui
 ```
 
-### Keyboard Navigation & Hotkeys
+### Dashboard Tabs
 
-- **Tabs Navigation**:
-  - `[1]` Services Dashboard
-  - `[2]` Networks & Bridges Topology
-  - `[3]` Btrfs Snapshots & Branches
-  - `[4]` Panorama Multi-Container Logs
-  - `[5]` Provision / Deploy Wizard
-  - `[6]` Search & Filter
-  - `[?]` / `[7]` Help Cheatsheet
-  - `[Tab]` / `[Shift-Tab]` or `[Left]` / `[Right]`: Cycle tabs
-  - `[Up]` / `[Down]` or `[k]` / `[j]`: Navigate items in lists
-  - `[r]`: Force immediate refresh
-  - `[q]` / `[Esc]`: Quit or dismiss popup
+| Key | Tab | Description |
+|---|---|---|
+| `[1]` | **Services** | List containers, inspect status, view connection URIs, manage ports and limits |
+| `[2]` | **Networks** | Manage bridge networks, view IPAM subnets/gateways, attach/detach containers |
+| `[3]` | **Snapshots** | View Btrfs snapshots, create point-in-time tags, restore states, export archives |
+| `[4]` | **Panorama** | Stream real-time aggregated logs across multiple containers on a bridge network |
+| `[5]` | **Deploy** | Interactive form to provision catalog services with custom ports, limits, and networks |
+| `[6]` | **Search** | Filter containers, networks, ports, and tags with instant matching |
+| `[?]` / `[7]` | **Help** | Keyboard shortcuts reference and navigation cheatsheet |
 
-- **Services View Hotkeys**:
-  - `[s]`: Start / Restart container
-  - `[x]`: Stop container
-  - `[c]`: Branch container (creates Btrfs CoW snapshot and launches branch on free port)
-  - `[m]`: Merge branch changes back into target service
-  - `[u]`: Tune CPU and Memory quotas on the fly
-  - `[t]`: Edit or clear project tag metadata
-  - `[b]`: Backup volume to `.tar.gz` archive
-  - `[d]`: Delete container (volume preserved)
-  - `[w]`: Wipe service (destroys container and Btrfs subvolume)
-  - `[n]`: Hot-attach container to bridge network
-  - `[X]`: Detach container from all networks
+### Global Navigation Hotkeys
 
-- **Networks View Hotkeys**:
-  - `[c]`: Create new bridge network (custom name suffix, tag, subnet)
-  - `[d]`: Remove bridge network
-  - `[a]`: Attach container to network
-  - `[x]`: Detach container from network
-  - `[t]`: Tag network
-  - `[p]`: Open Panorama live log aggregator for this network
+- `[1]`..`[7]` or `[Tab]` / `[Shift-Tab]`: Switch between tabs.
+- `[Left]` / `[Right]`: Switch tabs horizontally.
+- `[Up]` / `[Down]` or `[k]` / `[j]`: Navigate items in lists and tables.
+- `[r]`: Force immediate refresh of container states and networks.
+- `[q]` / `[Esc]`: Quit d4c or dismiss open modal overlay.
+
+### Services View Hotkeys
+
+- `[s]`: Start or restart selected service container.
+- `[x]`: Stop running service container.
+- `[c]`: Branch container via Btrfs CoW snapshot (opens modal to set suffix, port, and limits).
+- `[m]`: Merge branch changes back into target service (with pre-merge backup).
+- `[u]`: Update CPU and memory limits on the fly.
+- `[t]`: Set or clear project tag metadata.
+- `[b]`: Backup volume to compressed `.tar.gz` archive.
+- `[d]`: Delete container definition (Btrfs storage volume preserved).
+- `[w]`: Wipe service completely (destroys container, state, and Btrfs subvolumes).
+- `[n]`: Hot-attach container to bridge network.
+- `[X]`: Detach container from all networks.
+
+### Networks View Hotkeys
+
+- `[c]`: Create new bridge network (custom name, tag, subnet CIDR).
+- `[d]`: Remove bridge network (cleanly disconnects all containers first).
+- `[a]`: Attach container to network.
+- `[x]`: Detach container from network.
+- `[t]`: Update network tag metadata.
+- `[p]`: Open Panorama live log aggregator for the selected network.
 
 ---
 
-## CLI Commands
+## CLI Reference
 
 ### 1. Service Provisioning & Management
 
@@ -106,7 +124,7 @@ d4c up redis --name cache --cpus "1.0" --memory "512m"
 # Provision Apache Kafka (KRaft mode)
 d4c up kafka --name kafka-broker
 
-# Provision a custom container image
+# Provision a custom OCI container image
 d4c up custom --image docker.io/library/nginx:alpine --name web --port 8080
 
 # List all managed services (table format)
@@ -123,11 +141,11 @@ d4c rm db-main
 # Stream live container logs
 d4c logs db-main --follow --tail 100
 
-# Update CPU and memory limits on the fly
+# Update CPU and memory limits live on running containers
 d4c update db-main --cpus "2.0" --memory "2g"
 
 # Completely wipe a container AND destroy all its Btrfs subvolumes and snapshots
-d4c wipe db-main --force
+d4c wipe db-main
 ```
 
 ### 2. Atomic Snapshots, Branching & Merging
@@ -141,15 +159,15 @@ d4c snap list db-main
 d4c snap list db-main --json
 
 # 3. Branch db-main into an independent writable container instance
-# (Clones volume state instantly via Btrfs CoW, overrides/inherits CPU/RAM limits, and starts container on a free port)
+# Clones volume state instantly via Btrfs CoW, inherits or overrides CPU/RAM limits, and binds a free port
 d4c snap branch db-main feat-auth --port 5433 --cpus "1.5" --memory "1g"
 
 # 4. Merge changes from branch db-main_feat-auth back into db-main
-# (Automatically creates a safety backup snapshot of db-main before merging)
+# Automatically stops containers safely, creates a safety backup snapshot, merges filesystem state, and restarts
 d4c snap merge db-main_feat-auth db-main
 
 # 5. Restore db-main to an earlier snapshot
-d4c snap restore db-main --snapshot v1.0
+d4c snap restore db-main -s v1.0
 
 # 6. Export an atomic snapshot as a compressed .tar.gz archive
 d4c snap export db-main --destination /tmp/backups
@@ -179,7 +197,7 @@ d4c net panorama backend-mesh
 ### 4. Topology Export & Search
 
 ```bash
-# Export active topology to docker-compose.yml
+# Export active topology to docker-compose.yml (host bind mode or portable volume mode)
 d4c compose --output ./docker-compose.yml --mode host
 
 # Search containers, networks, ports, and tags
@@ -190,24 +208,38 @@ d4c search auth
 
 ## Storage Architecture
 
-All container data volumes and Btrfs snapshots are stored in the user's local XDG data path:
+All container data volumes and Btrfs snapshots are stored in the user local XDG data path:
 
 ```
 ~/.local/share/d4c/
-├── state.json                           # Metadata state store (tags, branch links)
+├── state.json                                  # Metadata state store (tags, branch parents, networks)
 └── volumes/
-    ├── d4c_vol_<service>_data/          # Active writable Btrfs subvolume
-    ├── d4c_vol_<service>_snap_<tag>/    # Atomic snapshot subvolume
-    └── d4c_vol_<service>_<branch>_data/ # Branched writable subvolume
+    ├── d4c_vol_<service>_data/                 # Active writable Btrfs subvolume
+    ├── d4c_vol_<service>_snap_<tag>/           # Point-in-time snapshot subvolume
+    ├── d4c_vol_<service>_snap_pre_merge_<ts>/  # Automatic safety backup before merge
+    └── d4c_vol_<service>_<branch>_data/        # Independent writable branch subvolume
+```
+
+- **Zero-Copy Branching**: Creating a branch takes milliseconds and initially consumes 0 bytes of disk space. Only modified data blocks consume additional storage as changes are written.
+- **Safety Pre-Merge Snapshots**: Every merge operation automatically creates a `pre_merge_<source>_<timestamp>` snapshot before applying changes, allowing seamless rollback via `d4c snap restore` if needed.
+- **Rootless Sub-UID Safety**: Directory operations and Btrfs snapshot management execute within `podman unshare` namespaces when handling container-mapped sub-UIDs, preserving permission fidelity without root host privileges.
+
+---
+
+## Testing & Quality
+
+Run the test suite and static analysis:
+
+```bash
+# Run unit and integration tests
+cargo test
+
+# Run Clippy linter
+cargo clippy -- -D warnings
 ```
 
 ---
 
-## Testing
+## License
 
-Run the full automated unit and integration test suite:
-
-```bash
-cargo test
-cargo clippy -- -D warnings
-```
+MIT License. See [LICENSE](LICENSE) for details.
