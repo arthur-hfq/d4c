@@ -22,8 +22,7 @@ pub struct RunContainerParams<'a> {
     pub branch_parent: Option<&'a str>,
 }
 
-/// Provisions and launches a container with Podman
-pub fn run_service_container(params: RunContainerParams) -> Result<String> {
+fn build_run_command(params: &RunContainerParams, include_limits: bool) -> Command {
     let mut cmd = Command::new("podman");
     cmd.args(["run", "-d"]);
     cmd.args(["--name", params.name]);
@@ -52,12 +51,14 @@ pub fn run_service_container(params: RunContainerParams) -> Result<String> {
         &format!("{}:{}:Z", params.volume_path.display(), params.container_mount),
     ]);
 
-    // Resource limits
-    if let Some(cpus) = params.cpus {
-        cmd.args(["--cpus", cpus]);
-    }
-    if let Some(mem) = params.memory {
-        cmd.args(["--memory", mem]);
+    // Resource limits (if enabled and requested)
+    if include_limits {
+        if let Some(cpus) = params.cpus {
+            cmd.args(["--cpus", cpus]);
+        }
+        if let Some(mem) = params.memory {
+            cmd.args(["--memory", mem]);
+        }
     }
 
     // Network connection: default to podman bridge network so rootless containers support hot-attach
@@ -72,14 +73,48 @@ pub fn run_service_container(params: RunContainerParams) -> Result<String> {
     // Image
     cmd.arg(params.image);
 
+    cmd
+}
+
+/// Provisions and launches a container with Podman
+pub fn run_service_container(params: RunContainerParams) -> Result<String> {
+    // Proactively remove any stale or stopped container instance with the same name
+    // to prevent container name conflicts or orphaned state
+    let _ = remove_container(params.name, true);
+
+    let has_limits = params.cpus.is_some() || params.memory.is_some();
+    let mut applied_limits = has_limits;
+
+    let mut cmd = build_run_command(&params, true);
     let output = cmd.output().context("Failed to execute 'podman run'")?;
 
-    if !output.status.success() {
+    let container_id = if output.status.success() {
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    } else {
         let err_msg = String::from_utf8_lossy(&output.stderr);
-        bail!("Failed to start container '{}': {}", params.name, err_msg.trim());
-    }
+        // Ensure failed half-created container is removed from Podman
+        let _ = remove_container(params.name, true);
 
-    let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        // Check if failure is due to rootless cgroup delegation limitations
+        let is_cgroup_err = err_msg.contains("cgroup")
+            || err_msg.contains("rootless needs no limits")
+            || err_msg.contains("permission denied: OCI permission denied");
+
+        if has_limits && is_cgroup_err {
+            applied_limits = false;
+            let mut retry_cmd = build_run_command(&params, false);
+            let retry_out = retry_cmd.output().context("Failed to execute fallback 'podman run'")?;
+            if retry_out.status.success() {
+                String::from_utf8_lossy(&retry_out.stdout).trim().to_string()
+            } else {
+                let retry_err = String::from_utf8_lossy(&retry_out.stderr);
+                let _ = remove_container(params.name, true);
+                bail!("Failed to start container '{}': {}", params.name, retry_err.trim());
+            }
+        } else {
+            bail!("Failed to start container '{}': {}", params.name, err_msg.trim());
+        }
+    };
 
     // Persist to local state store
     let mut env_map = HashMap::new();
@@ -100,8 +135,8 @@ pub fn run_service_container(params: RunContainerParams) -> Result<String> {
         volume_path: params.volume_path.to_path_buf(),
         networks: initial_networks,
         network: params.network.map(|s| s.to_string()),
-        cpus: params.cpus.map(|s| s.to_string()),
-        memory: params.memory.map(|s| s.to_string()),
+        cpus: if applied_limits { params.cpus.map(|s| s.to_string()) } else { None },
+        memory: if applied_limits { params.memory.map(|s| s.to_string()) } else { None },
         branch_parent: params.branch_parent.map(|s| s.to_string()),
         created_at: now_str,
         env: env_map,
@@ -122,6 +157,40 @@ pub fn start_service(name: &str) -> Result<()> {
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
+        let is_missing = err.contains("no such container") || err.contains("no container with name");
+        let is_cgroup_err = err.contains("cgroup")
+            || err.contains("rootless needs no limits")
+            || err.contains("permission denied: OCI permission denied");
+
+        if is_missing || is_cgroup_err {
+            let store = StateStore::load().unwrap_or_default();
+            if let Some(s) = store.services.get(name) {
+                // If it was a cgroup failure on an existing container, remove the broken container first
+                if is_cgroup_err {
+                    let _ = remove_container(name, true);
+                }
+                let cat = s.catalog;
+                let c_mount = cat.default_data_dir();
+                let env_vec: Vec<(String, String)> = s.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let _ = run_service_container(RunContainerParams {
+                    name,
+                    catalog: cat,
+                    image: &s.image,
+                    host_port: s.host_port,
+                    container_port: s.container_port,
+                    volume_path: &s.volume_path,
+                    container_mount: c_mount,
+                    env: &env_vec,
+                    cpus: if is_cgroup_err { None } else { s.cpus.as_deref() },
+                    memory: if is_cgroup_err { None } else { s.memory.as_deref() },
+                    network: s.network.as_deref(),
+                    tag: s.tag.as_deref(),
+                    branch_parent: s.branch_parent.as_deref(),
+                })?;
+                return Ok(());
+            }
+        }
+
         bail!("Failed to start container '{}': {}", name, err.trim());
     }
 
@@ -374,6 +443,12 @@ pub fn update_service_resources(
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
+        if err.contains("cgroup") || err.contains("cpu.max") || err.contains("exit status 1") {
+            bail!(
+                "Failed to update resources for '{}': Rootless cgroup delegation is not enabled on this host. Dynamic limits cannot be updated without root/cgroup privileges.",
+                name
+            );
+        }
         bail!("Failed to update resources for '{}': {}", name, err.trim());
     }
 

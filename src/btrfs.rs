@@ -61,13 +61,13 @@ pub fn ensure_service_volume(service: &str) -> Result<PathBuf> {
     fs::create_dir_all(parent)?;
 
     if is_btrfs(parent) {
-        let status = Command::new("btrfs")
+        let output = Command::new("btrfs")
             .args(["subvolume", "create"])
             .arg(&target)
-            .status();
+            .output();
 
-        match status {
-            Ok(s) if s.success() => return Ok(target),
+        match output {
+            Ok(out) if out.status.success() => return Ok(target),
             _ => {
                 // Fall back to normal directory creation if btrfs subvolume create fails
                 fs::create_dir_all(&target)?;
@@ -331,20 +331,20 @@ pub fn restore_service_snapshot(service: &str, snapshot_tag: &str) -> Result<Pat
 
     // Step 3: Create a new writable snapshot from the chosen snapshot
     if is_btrfs(&snap_dir) {
-        let status = Command::new("btrfs")
+        let output = Command::new("btrfs")
             .args(["subvolume", "snapshot"])
             .arg(&snap_dir)
             .arg(&target_subvol)
-            .status();
+            .output();
 
-        match status {
-            Ok(s) if s.success() => {
+        match output {
+            Ok(out) if out.status.success() => {
                 // Ensure the restored target is writable
                 let _ = Command::new("btrfs")
                     .args(["property", "set", "-ts"])
                     .arg(&target_subvol)
                     .args(["ro", "false"])
-                    .status();
+                    .output();
                 return Ok(target_subvol);
             }
             _ => {
@@ -378,26 +378,26 @@ pub fn merge_service_volumes(source_service: &str, target_service: &str) -> Resu
 
     // Step 2: Synchronize data from source to target
     // Check if rsync is available for clean directory synchronization
-    let rsync_status = Command::new("rsync")
+    let rsync_output = Command::new("rsync")
         .args(["-a", "--delete"])
         .arg(format!("{}/", source_subvol.to_string_lossy()))
         .arg(format!("{}/", target_subvol.to_string_lossy()))
-        .status();
+        .output();
 
-    match rsync_status {
-        Ok(s) if s.success() => Ok(()),
+    match rsync_output {
+        Ok(out) if out.status.success() => Ok(()),
         _ => {
             // Fallback: replace target with new writable snapshot from source
             delete_subvolume_or_dir(&target_subvol)?;
             if is_btrfs(&source_subvol) {
-                let status = Command::new("btrfs")
+                let snap_output = Command::new("btrfs")
                     .args(["subvolume", "snapshot"])
                     .arg(&source_subvol)
                     .arg(&target_subvol)
-                    .status();
+                    .output();
 
-                match status {
-                    Ok(s) if s.success() => Ok(()),
+                match snap_output {
+                    Ok(out) if out.status.success() => Ok(()),
                     _ => copy_dir_reflink(&source_subvol, &target_subvol),
                 }
             } else {
@@ -425,16 +425,16 @@ pub fn export_service_snapshot(
     let tarball_name = format!("d4c_{}_snapshot_{}.tar.gz", service, export_tag);
     let tarball_path = dest_dir.join(tarball_name);
 
-    let status = Command::new("tar")
+    let output = Command::new("tar")
         .args(["-czf"])
         .arg(&tarball_path)
         .arg("-C")
         .arg(snapshot_dir.parent().context("Snapshot dir has no parent")?)
         .arg(snapshot_dir.file_name().context("Snapshot dir has no name")?)
-        .status();
+        .output();
 
-    let success = match status {
-        Ok(s) if s.success() => true,
+    let success = match output {
+        Ok(out) if out.status.success() => true,
         _ => {
             Command::new("podman")
                 .args(["unshare", "tar", "-czf"])
@@ -442,8 +442,8 @@ pub fn export_service_snapshot(
                 .arg("-C")
                 .arg(snapshot_dir.parent().context("Snapshot dir has no parent")?)
                 .arg(snapshot_dir.file_name().context("Snapshot dir has no name")?)
-                .status()
-                .is_ok_and(|s| s.success())
+                .output()
+                .is_ok_and(|out| out.status.success())
         }
     };
 
@@ -516,7 +516,7 @@ pub fn delete_subvolume_or_dir(path: &Path) -> Result<()> {
         let _ = Command::new("podman")
             .args(["unshare", "rm", "-rf"])
             .arg(path)
-            .status();
+            .output();
     }
 
     Ok(())

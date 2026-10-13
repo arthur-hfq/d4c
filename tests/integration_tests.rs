@@ -68,3 +68,65 @@ fn test_integration_search_empty() {
     let result = Engine::search("non_existent_service_query_123");
     assert!(result.is_ok());
 }
+
+#[test]
+fn test_integration_service_lifecycle_and_recreation() {
+    let test_svc = "d4c_int_test_redis";
+    // Ensure clean state before test
+    let _ = Engine::wipe_service_storage(test_svc);
+
+    // 1. Provision service with cpus limit (tests rootless cgroup fallback if unprivileged)
+    let prov_res = Engine::provision_service(
+        d4c::cli::ServiceCatalog::Redis,
+        None,
+        Some(test_svc.to_string()),
+        None,
+        Some("lifecycle_test".to_string()),
+        Some("1".to_string()),
+        None,
+        None,
+        None,
+    );
+    assert!(prov_res.is_ok(), "Provisioning service failed: {:?}", prov_res.err());
+
+    // 2. Check service is listed and running
+    let svcs = d4c::podman::list_services().expect("Failed to list services");
+    let found = svcs.iter().find(|s| s.name == test_svc);
+    assert!(found.is_some(), "Service was not found after provisioning");
+    assert!(found.unwrap().is_running(), "Service should be in running state");
+
+    // 3. Remove container (rm) - preserves volume on disk
+    let rm_res = Engine::rm(test_svc);
+    assert!(rm_res.is_ok(), "Engine::rm failed: {:?}", rm_res.err());
+
+    // 4. Verify service is NO LONGER in active services list
+    let svcs_after_rm = d4c::podman::list_services().expect("Failed to list services");
+    assert!(
+        !svcs_after_rm.iter().any(|s| s.name == test_svc),
+        "Service should not be present in list_services after Engine::rm"
+    );
+
+    // 5. Recreate service with the EXACT same name
+    let recreate_res = Engine::provision_service(
+        d4c::cli::ServiceCatalog::Redis,
+        None,
+        Some(test_svc.to_string()),
+        None,
+        Some("recreated_tag".to_string()),
+        None,
+        None,
+        None,
+        None,
+    );
+    assert!(recreate_res.is_ok(), "Recreation failed: {:?}", recreate_res.err());
+
+    // 6. Verify recreated service is up and running
+    let svcs_recreated = d4c::podman::list_services().expect("Failed to list services");
+    let recreated_found = svcs_recreated.iter().find(|s| s.name == test_svc);
+    assert!(recreated_found.is_some(), "Recreated service not found in list");
+    assert!(recreated_found.unwrap().is_running(), "Recreated service should be running");
+
+    // 7. Cleanup
+    let wipe_res = Engine::wipe_service_storage(test_svc);
+    assert!(wipe_res.is_ok(), "Wipe cleanup failed: {:?}", wipe_res.err());
+}

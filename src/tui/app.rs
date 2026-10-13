@@ -746,6 +746,8 @@ impl App {
         match action {
             PendingAction::DeleteService(name) => {
                 let res = podman::remove_container(&name, true);
+                let mut store = StateStore::load().unwrap_or_default();
+                let _ = store.remove_service(&name);
                 match res {
                     Ok(_) => self.set_toast(&format!("[OK] Container '{}' deleted (data preserved)", name), false),
                     Err(e) => self.set_toast(&format!("[ERROR] Delete failed: {}", e), true),

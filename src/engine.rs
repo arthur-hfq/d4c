@@ -207,6 +207,11 @@ impl Engine {
         let yellow = Style::new().yellow().bold();
         println!("Removing container for service '{}' (volume will be preserved)...", service);
         podman::remove_container(service, true)?;
+
+        // Remove from state store so it is no longer listed as active service
+        let mut store = StateStore::load().unwrap_or_default();
+        let _ = store.remove_service(service);
+
         println!("{}", yellow.apply_to(format!("[OK] Container '{}' removed. Btrfs volume preserved.", service)));
         Ok(())
     }
