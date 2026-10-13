@@ -229,6 +229,21 @@ pub fn list_bridge_networks() -> Result<Vec<NetworkInfo>> {
 pub fn remove_bridge_network(name: &str) -> Result<()> {
     let net_name = normalize_network_name(name);
 
+    // Disconnect any containers using this network first so they are not deleted or corrupted
+    let mut store = StateStore::load().unwrap_or_default();
+    for (svc_name, svc) in store.services.iter_mut() {
+        if svc.networks.contains(&net_name) {
+            let _ = Command::new("podman")
+                .args(["network", "disconnect", &net_name, svc_name])
+                .output();
+            svc.networks.retain(|n| n != &net_name);
+            if svc.network.as_deref() == Some(&net_name) {
+                svc.network = svc.networks.first().cloned();
+            }
+        }
+    }
+    let _ = store.save();
+
     let output = Command::new("podman")
         .args(["network", "rm", &net_name])
         .output()

@@ -36,9 +36,17 @@ impl Engine {
             if !existing_nets.iter().any(|n| n.name == normalized) {
                 net::create_bridge_network(&normalized, tag.as_deref(), None)?;
             }
-            Some(normalized)
+            normalized
         } else {
-            None
+            // Auto-create an isolated private bridge network for this container
+            // so it is visible in Networks and Panorama tabs, allowing full management,
+            // multi-container migration, and detachment.
+            let private_net_name = format!("d4c_net_private_{}", service_name);
+            let existing_nets = net::list_bridge_networks()?;
+            if !existing_nets.iter().any(|n| n.name == private_net_name) {
+                let _ = net::create_bridge_network(&private_net_name, Some("private"), None);
+            }
+            private_net_name
         };
 
         let container_image = service_type.default_image(image.as_deref());
@@ -56,7 +64,7 @@ impl Engine {
             env: &env_vars,
             cpus: cpus.as_deref(),
             memory: memory.as_deref(),
-            network: resolved_network.as_deref(),
+            network: Some(&resolved_network),
             tag: tag.as_deref(),
             branch_parent: None,
         })?;
@@ -228,6 +236,10 @@ impl Engine {
         let mut store = StateStore::load().unwrap_or_default();
         let _ = store.remove_service(service);
 
+        // Clean up private network if one was automatically created for this service
+        let priv_net = format!("d4c_net_private_{}", service);
+        let _ = net::remove_bridge_network(&priv_net);
+
         Ok(())
     }
 
@@ -320,6 +332,18 @@ impl Engine {
         // Find free port for branch container
         let branch_port = net::find_free_port(port, default_port + 100)?;
 
+        // Network for branch: if parent used its dedicated private network, create a dedicated private
+        // network for the branch too; otherwise attach to the shared network.
+        let parent_priv_net = format!("d4c_net_private_{}", service);
+        let branch_network = match network {
+            Some(ref n) if n != &parent_priv_net => n.clone(),
+            _ => {
+                let branch_priv_net = format!("d4c_net_private_{}", branch_name);
+                let _ = net::create_bridge_network(&branch_priv_net, Some("private"), None);
+                branch_priv_net
+            }
+        };
+
         // Run branch container instance
         let cid = podman::run_service_container(RunContainerParams {
             name: &branch_name,
@@ -332,7 +356,7 @@ impl Engine {
             env: &env_vars,
             cpus: effective_cpus.as_deref(),
             memory: effective_memory.as_deref(),
-            network: network.as_deref(),
+            network: Some(&branch_network),
             tag: Some(&format!("branch_of_{}", service)),
             branch_parent: Some(service),
         })?;

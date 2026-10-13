@@ -774,11 +774,11 @@ fn draw_deploy_tab(f: &mut Frame, app: &App, area: Rect) {
 
     // Network selector row
     let net_display = if form.network_idx == 0 {
-        "Default Bridge (podman)".to_string()
+        "Auto Private Bridge (d4c_net_private_<name>)".to_string()
     } else if form.network_idx <= app.networks.len() {
         app.networks[form.network_idx - 1].name.clone()
     } else {
-        "Default".to_string()
+        "Auto Private Bridge".to_string()
     };
 
     let is_net_focused = !is_catalog_active && form.field_idx == fields.len();
