@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+#[derive(Debug, Clone, Copy)]
 pub struct RunContainerParams<'a> {
     pub name: &'a str,
     pub catalog: ServiceCatalog,
@@ -22,10 +23,57 @@ pub struct RunContainerParams<'a> {
     pub branch_parent: Option<&'a str>,
 }
 
+fn find_crun_runtime() -> Option<PathBuf> {
+    if let Ok(home) = std::env::var("HOME") {
+        let p = PathBuf::from(home).join(".local/bin/crun");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    for p in ["/usr/bin/crun", "/usr/local/bin/crun", "/usr/sbin/crun"] {
+        let path = PathBuf::from(p);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+pub fn normalize_memory_limit(mem: &str) -> String {
+    let trimmed = mem.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    // If user typed only digits (e.g. "512", "1024"), default to megabytes (m)
+    if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return format!("{}m", trimmed);
+    }
+    let lower = trimmed.to_lowercase();
+    if lower.ends_with("mb") {
+        return format!("{}m", &lower[..lower.len() - 2]);
+    }
+    if lower.ends_with("gb") {
+        return format!("{}g", &lower[..lower.len() - 2]);
+    }
+    if lower.ends_with("kb") {
+        return format!("{}k", &lower[..lower.len() - 2]);
+    }
+    trimmed.to_string()
+}
+
+pub fn normalize_cpu_limit(cpu: &str) -> String {
+    cpu.trim().to_string()
+}
+
 fn build_run_command(params: &RunContainerParams, include_limits: bool) -> Command {
     let mut cmd = Command::new("podman");
     cmd.args(["run", "-d"]);
     cmd.args(["--name", params.name]);
+
+    // Use crun runtime if available for native rootless cgroup limit support
+    if let Some(crun_path) = find_crun_runtime() {
+        cmd.args(["--runtime", crun_path.to_str().unwrap_or("crun")]);
+    }
 
     // Standard d4c orchestration labels
     cmd.args(["--label", "d4c.managed=true"]);
@@ -54,16 +102,25 @@ fn build_run_command(params: &RunContainerParams, include_limits: bool) -> Comma
     // Resource limits (if enabled and requested)
     if include_limits {
         if let Some(cpus) = params.cpus {
-            cmd.args(["--cpus", cpus]);
+            let n_cpu = normalize_cpu_limit(cpus);
+            if !n_cpu.is_empty() {
+                cmd.args(["--cpus", &n_cpu]);
+            }
         }
         if let Some(mem) = params.memory {
-            cmd.args(["--memory", mem]);
+            let n_mem = normalize_memory_limit(mem);
+            if !n_mem.is_empty() {
+                cmd.args(["--memory", &n_mem]);
+            }
         }
     }
 
-    // Network connection: default to podman bridge network so rootless containers support hot-attach
-    let network_to_use = params.network.unwrap_or("podman");
-    cmd.args(["--network", network_to_use]);
+    // Network connection: only pass --network if a custom network was specified.
+    // In rootless mode, omitting --network allows Podman to use default rootless networking (pasta/slirp4netns),
+    // which does not require root/iptables NAT permissions.
+    if let Some(net) = params.network {
+        cmd.args(["--network", net]);
+    }
 
     // Environment variables
     for (k, v) in params.env {
@@ -82,7 +139,9 @@ pub fn run_service_container(params: RunContainerParams) -> Result<String> {
     // to prevent container name conflicts or orphaned state
     let _ = remove_container(params.name, true);
 
-    let has_limits = params.cpus.is_some() || params.memory.is_some();
+    let normalized_cpus = params.cpus.map(normalize_cpu_limit).filter(|s| !s.is_empty());
+    let normalized_mem = params.memory.map(normalize_memory_limit).filter(|s| !s.is_empty());
+    let has_limits = normalized_cpus.is_some() || normalized_mem.is_some();
     let mut applied_limits = has_limits;
 
     let mut cmd = build_run_command(&params, true);
@@ -95,15 +154,29 @@ pub fn run_service_container(params: RunContainerParams) -> Result<String> {
         // Ensure failed half-created container is removed from Podman
         let _ = remove_container(params.name, true);
 
-        // Check if failure is due to rootless cgroup delegation limitations
+        // Check if failure is due to rootless cgroup delegation limitations or bridge network iptables failure
         let is_cgroup_err = err_msg.contains("cgroup")
             || err_msg.contains("rootless needs no limits")
             || err_msg.contains("permission denied: OCI permission denied");
+        let is_net_err = err_msg.contains("netavark") || err_msg.contains("ip_tables");
 
         if has_limits && is_cgroup_err {
             applied_limits = false;
             let mut retry_cmd = build_run_command(&params, false);
             let retry_out = retry_cmd.output().context("Failed to execute fallback 'podman run'")?;
+            if retry_out.status.success() {
+                String::from_utf8_lossy(&retry_out.stdout).trim().to_string()
+            } else {
+                let retry_err = String::from_utf8_lossy(&retry_out.stderr);
+                let _ = remove_container(params.name, true);
+                bail!("Failed to start container '{}': {}", params.name, retry_err.trim());
+            }
+        } else if is_net_err && params.network.is_some() {
+            // Retry without custom bridge network
+            let mut retry_params = params;
+            retry_params.network = None;
+            let mut retry_cmd = build_run_command(&retry_params, applied_limits);
+            let retry_out = retry_cmd.output().context("Failed to execute network fallback 'podman run'")?;
             if retry_out.status.success() {
                 String::from_utf8_lossy(&retry_out.stdout).trim().to_string()
             } else {
@@ -135,8 +208,8 @@ pub fn run_service_container(params: RunContainerParams) -> Result<String> {
         volume_path: params.volume_path.to_path_buf(),
         networks: initial_networks,
         network: params.network.map(|s| s.to_string()),
-        cpus: if applied_limits { params.cpus.map(|s| s.to_string()) } else { None },
-        memory: if applied_limits { params.memory.map(|s| s.to_string()) } else { None },
+        cpus: if applied_limits { normalized_cpus } else { None },
+        memory: if applied_limits { normalized_mem } else { None },
         branch_parent: params.branch_parent.map(|s| s.to_string()),
         created_at: now_str,
         env: env_map,
@@ -161,12 +234,13 @@ pub fn start_service(name: &str) -> Result<()> {
         let is_cgroup_err = err.contains("cgroup")
             || err.contains("rootless needs no limits")
             || err.contains("permission denied: OCI permission denied");
+        let is_net_err = err.contains("netavark") || err.contains("ip_tables");
 
-        if is_missing || is_cgroup_err {
+        if is_missing || is_cgroup_err || is_net_err {
             let store = StateStore::load().unwrap_or_default();
             if let Some(s) = store.services.get(name) {
-                // If it was a cgroup failure on an existing container, remove the broken container first
-                if is_cgroup_err {
+                // If it was a cgroup or network failure on an existing container, remove the broken container first
+                if is_cgroup_err || is_net_err {
                     let _ = remove_container(name, true);
                 }
                 let cat = s.catalog;
@@ -183,7 +257,7 @@ pub fn start_service(name: &str) -> Result<()> {
                     env: &env_vec,
                     cpus: if is_cgroup_err { None } else { s.cpus.as_deref() },
                     memory: if is_cgroup_err { None } else { s.memory.as_deref() },
-                    network: s.network.as_deref(),
+                    network: if is_net_err { None } else { s.network.as_deref() },
                     tag: s.tag.as_deref(),
                     branch_parent: s.branch_parent.as_deref(),
                 })?;
@@ -424,17 +498,20 @@ pub fn update_service_resources(
     cpus: Option<&str>,
     memory: Option<&str>,
 ) -> Result<()> {
-    if cpus.is_none() && memory.is_none() {
+    let norm_cpu = cpus.map(normalize_cpu_limit).filter(|c| !c.is_empty());
+    let norm_mem = memory.map(normalize_memory_limit).filter(|m| !m.is_empty());
+
+    if norm_cpu.is_none() && norm_mem.is_none() {
         return Ok(());
     }
 
     let mut cmd = Command::new("podman");
     cmd.args(["update"]);
 
-    if let Some(c) = cpus {
+    if let Some(ref c) = norm_cpu {
         cmd.args(["--cpus", c]);
     }
-    if let Some(m) = memory {
+    if let Some(ref m) = norm_mem {
         cmd.args(["--memory", m]);
     }
     cmd.arg(name);
@@ -455,11 +532,11 @@ pub fn update_service_resources(
     // Update in state store
     let mut store = StateStore::load().unwrap_or_default();
     if let Some(svc) = store.services.get_mut(name) {
-        if let Some(c) = cpus {
-            svc.cpus = Some(c.to_string());
+        if let Some(c) = norm_cpu {
+            svc.cpus = Some(c);
         }
-        if let Some(m) = memory {
-            svc.memory = Some(m.to_string());
+        if let Some(m) = norm_mem {
+            svc.memory = Some(m);
         }
         let _ = store.save();
     }
