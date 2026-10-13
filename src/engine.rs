@@ -385,21 +385,31 @@ impl Engine {
 
     /// Silent merge service branches (used by TUI and CLI)
     pub fn merge_service_branches(source: &str, target: &str) -> Result<()> {
+        let source_was_running = podman::inspect_service(source)?
+            .map(|s| s.status.to_lowercase().contains("running"))
+            .unwrap_or(false);
+
         let target_was_running = podman::inspect_service(target)?
             .map(|s| s.status.to_lowercase().contains("running"))
             .unwrap_or(false);
 
+        if source_was_running {
+            let _ = podman::stop_service(source);
+        }
         if target_was_running {
             let _ = podman::stop_service(target);
         }
 
-        btrfs::merge_service_volumes(source, target)?;
+        let merge_res = btrfs::merge_service_volumes(source, target);
 
+        if source_was_running {
+            let _ = podman::start_service(source);
+        }
         if target_was_running {
             let _ = podman::start_service(target);
         }
 
-        Ok(())
+        merge_res
     }
 
     /// Handle snap subcommands

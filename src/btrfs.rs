@@ -337,24 +337,35 @@ pub fn restore_service_snapshot(service: &str, snapshot_tag: &str) -> Result<Pat
             .arg(&target_subvol)
             .output();
 
-        match output {
-            Ok(out) if out.status.success() => {
-                // Ensure the restored target is writable
-                let _ = Command::new("btrfs")
-                    .args(["property", "set", "-ts"])
-                    .arg(&target_subvol)
-                    .args(["ro", "false"])
-                    .output();
-                return Ok(target_subvol);
-            }
+        let success = match output {
+            Ok(ref o) if o.status.success() => true,
             _ => {
-                copy_dir_reflink(&snap_dir, &target_subvol)?;
+                Command::new("podman")
+                    .args(["unshare", "btrfs", "subvolume", "snapshot"])
+                    .arg(&snap_dir)
+                    .arg(&target_subvol)
+                    .output()
+                    .is_ok_and(|o| o.status.success())
             }
+        };
+
+        if success {
+            // Ensure the restored target is writable
+            let _ = Command::new("btrfs")
+                .args(["property", "set", "-ts"])
+                .arg(&target_subvol)
+                .args(["ro", "false"])
+                .output();
+            let _ = Command::new("podman")
+                .args(["unshare", "btrfs", "property", "set", "-ts"])
+                .arg(&target_subvol)
+                .args(["ro", "false"])
+                .output();
+            return Ok(target_subvol);
         }
-    } else {
-        copy_dir_reflink(&snap_dir, &target_subvol)?;
     }
 
+    copy_dir_reflink(&snap_dir, &target_subvol)?;
     Ok(target_subvol)
 }
 
@@ -376,35 +387,48 @@ pub fn merge_service_volumes(source_service: &str, target_service: &str) -> Resu
     let safety_tag = format!("pre_merge_{}_{}", source_service, ts);
     let _ = create_service_snapshot(target_service, Some(&safety_tag), true);
 
-    // Step 2: Synchronize data from source to target
-    // Check if rsync is available for clean directory synchronization
-    let rsync_output = Command::new("rsync")
-        .args(["-a", "--delete"])
-        .arg(format!("{}/", source_subvol.to_string_lossy()))
-        .arg(format!("{}/", target_subvol.to_string_lossy()))
-        .output();
+    // Step 2: Delete target volume cleanly so it can be replaced by the merged snapshot
+    delete_subvolume_or_dir(&target_subvol)?;
 
-    match rsync_output {
-        Ok(out) if out.status.success() => Ok(()),
-        _ => {
-            // Fallback: replace target with new writable snapshot from source
-            delete_subvolume_or_dir(&target_subvol)?;
-            if is_btrfs(&source_subvol) {
-                let snap_output = Command::new("btrfs")
-                    .args(["subvolume", "snapshot"])
+    // Step 3: Snapshot source into target (atomic Btrfs branch merge)
+    if is_btrfs(&source_subvol) {
+        let snap_output = Command::new("btrfs")
+            .args(["subvolume", "snapshot"])
+            .arg(&source_subvol)
+            .arg(&target_subvol)
+            .output();
+
+        let success = match snap_output {
+            Ok(ref o) if o.status.success() => true,
+            _ => {
+                Command::new("podman")
+                    .args(["unshare", "btrfs", "subvolume", "snapshot"])
                     .arg(&source_subvol)
                     .arg(&target_subvol)
-                    .output();
-
-                match snap_output {
-                    Ok(out) if out.status.success() => Ok(()),
-                    _ => copy_dir_reflink(&source_subvol, &target_subvol),
-                }
-            } else {
-                copy_dir_reflink(&source_subvol, &target_subvol)
+                    .output()
+                    .is_ok_and(|o| o.status.success())
             }
+        };
+
+        if success {
+            // Ensure target is writable
+            let _ = Command::new("btrfs")
+                .args(["property", "set", "-ts"])
+                .arg(&target_subvol)
+                .args(["ro", "false"])
+                .output();
+            let _ = Command::new("podman")
+                .args(["unshare", "btrfs", "property", "set", "-ts"])
+                .arg(&target_subvol)
+                .args(["ro", "false"])
+                .output();
+            return Ok(());
         }
     }
+
+    // Fallback if Btrfs snapshotting fails: reflink copy
+    copy_dir_reflink(&source_subvol, &target_subvol)?;
+    Ok(())
 }
 
 /// Creates an atomic snapshot and exports it as a compressed .tar.gz archive
@@ -487,17 +511,31 @@ pub fn delete_subvolume_or_dir(path: &Path) -> Result<()> {
         .arg(path)
         .args(["ro", "false"])
         .output();
+    let _ = Command::new("podman")
+        .args(["unshare", "btrfs", "property", "set", "-ts"])
+        .arg(path)
+        .args(["ro", "false"])
+        .output();
 
-    // Clean contents inside the directory first so empty subvolume can be deleted by unprivileged user
+    // Clean contents inside the directory first so empty subvolume can be deleted
     let _ = clean_dir_contents(path);
 
-    // Try btrfs subvolume delete (capture output to suppress non-root permission warnings)
+    // Try btrfs subvolume delete directly or via podman unshare
     let btrfs_del = Command::new("btrfs")
         .args(["subvolume", "delete"])
         .arg(path)
         .output();
 
     if btrfs_del.is_ok_and(|out| out.status.success()) {
+        return Ok(());
+    }
+
+    let btrfs_unshare_del = Command::new("podman")
+        .args(["unshare", "btrfs", "subvolume", "delete"])
+        .arg(path)
+        .output();
+
+    if btrfs_unshare_del.is_ok_and(|out| out.status.success()) {
         return Ok(());
     }
 
@@ -517,6 +555,14 @@ pub fn delete_subvolume_or_dir(path: &Path) -> Result<()> {
             .args(["unshare", "rm", "-rf"])
             .arg(path)
             .output();
+        let _ = Command::new("podman")
+            .args(["unshare", "rmdir"])
+            .arg(path)
+            .output();
+    }
+
+    if path.exists() {
+        bail!("Failed to delete subvolume or directory at {:?}", path);
     }
 
     Ok(())
@@ -526,14 +572,23 @@ fn clean_dir_contents(path: &Path) -> Result<()> {
     if !path.is_dir() {
         return Ok(());
     }
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let child_path = entry.path();
-        if child_path.is_dir() {
-            let _ = clean_dir_contents(&child_path);
-            let _ = delete_subvolume_or_dir(&child_path);
-        } else {
-            let _ = fs::remove_file(&child_path);
+
+    // Fast wipe of container subuid files inside directory using podman unshare find
+    let _ = Command::new("podman")
+        .args(["unshare", "find"])
+        .arg(path)
+        .args(["-mindepth", "1", "-delete"])
+        .output();
+
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let child_path = entry.path();
+            if child_path.is_dir() {
+                let _ = clean_dir_contents(&child_path);
+                let _ = delete_subvolume_or_dir(&child_path);
+            } else {
+                let _ = fs::remove_file(&child_path);
+            }
         }
     }
     Ok(())
@@ -588,9 +643,9 @@ fn calculate_dir_size(path: &Path) -> u64 {
 }
 
 fn copy_dir_reflink(src: &Path, dst: &Path) -> Result<()> {
-    // Attempt cp --reflink=auto -a src dst (capture output to suppress rootless permission noise)
+    // Attempt cp --reflink=auto -aT src dst (capture output to suppress rootless permission noise)
     let status = Command::new("cp")
-        .args(["--reflink=auto", "-a"])
+        .args(["--reflink=auto", "-aT"])
         .arg(src)
         .arg(dst)
         .output();
@@ -601,7 +656,7 @@ fn copy_dir_reflink(src: &Path, dst: &Path) -> Result<()> {
 
     // Attempt under podman unshare
     let unshare_status = Command::new("podman")
-        .args(["unshare", "cp", "--reflink=auto", "-a"])
+        .args(["unshare", "cp", "--reflink=auto", "-aT"])
         .arg(src)
         .arg(dst)
         .output();
